@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -105,5 +106,45 @@ func TestConfigFromCredentialSource(t *testing.T) {
 				t.Errorf("Profile = %q, want %q", cfg.Profile, tc.wantProf)
 			}
 		})
+	}
+}
+
+func TestGrantProfileMode(t *testing.T) {
+	// Profile mode: no role ARN in context, --aws-profile is set.
+	// We can't exercise the live AWS validation in a unit test, but we can
+	// verify the grant() function builds the right credential shape for
+	// profile mode by short-circuiting the validation hook.
+	origValidate := validateProfileForGrant
+	validateProfileForGrant = func(ctx context.Context, profile, region string) error { return nil }
+	t.Cleanup(func() { validateProfileForGrant = origValidate })
+
+	ctx := WithGrantOptions(context.Background(), "" /*role*/, "us-west-2", "", "", "corp-broker")
+	cred, err := grant(ctx)
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if cred.Token != "" {
+		t.Errorf("Token = %q, want empty for profile mode", cred.Token)
+	}
+	if got := cred.Metadata[MetaKeySource]; got != "profile" {
+		t.Errorf("Metadata[source] = %q, want %q", got, "profile")
+	}
+	if got := cred.Metadata[MetaKeyProfile]; got != "corp-broker" {
+		t.Errorf("Metadata[profile] = %q, want corp-broker", got)
+	}
+	if got := cred.Metadata[MetaKeyRegion]; got != "us-west-2" {
+		t.Errorf("Metadata[region] = %q, want us-west-2", got)
+	}
+}
+
+func TestGrantRequiresRoleOrProfile(t *testing.T) {
+	// Neither role ARN nor profile provided → must error before any AWS call.
+	ctx := WithGrantOptions(context.Background(), "", "", "", "", "")
+	_, err := grant(ctx)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "role ARN") || !strings.Contains(err.Error(), "--aws-profile") {
+		t.Errorf("error message must mention both options: %v", err)
 	}
 }
