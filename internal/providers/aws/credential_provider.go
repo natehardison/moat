@@ -17,16 +17,18 @@ import (
 
 // CredentialProviderConfig holds the configuration needed to create a CredentialProvider.
 type CredentialProviderConfig struct {
+	Source          string // "role" (default) or "profile"
 	RoleARN         string
 	Region          string
 	SessionDuration time.Duration
 	ExternalID      string
-	Profile         string // AWS shared config profile (AWS_PROFILE) used to assume the role
+	Profile         string // AWS shared config profile
 }
 
 // CredentialProvider manages AWS credential fetching and caching for proxy use.
 // It creates an http.Handler that serves credentials in ECS container format.
 type CredentialProvider struct {
+	source          string // "role" or "profile"
 	roleARN         string
 	region          string
 	sessionDuration time.Duration
@@ -38,8 +40,12 @@ type CredentialProvider struct {
 	cached     *Credentials
 	expiration time.Time
 
-	// stsClient for making AssumeRole calls (injectable for testing)
+	// stsClient is used in role mode.
 	stsClient STSAssumeRoler
+	// profileCreds is used in profile mode (set by NewCredentialProvider from
+	// the loaded awsCfg.Credentials, which the SDK wraps in a CredentialsCache
+	// that natively handles credential_process / SSO refresh).
+	profileCreds awssdk.CredentialsProvider
 }
 
 // NewCredentialProvider creates a new AWS credential provider.
@@ -47,24 +53,30 @@ type CredentialProvider struct {
 // (equivalent to AWS_PROFILE) so the correct source identity is used
 // for AssumeRole regardless of which process creates the provider.
 func NewCredentialProvider(ctx context.Context, cfg CredentialProviderConfig, sessionName string) (*CredentialProvider, error) {
-	// Load AWS config from host environment
 	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region)}
 	if cfg.Profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(cfg.Profile))
-		slog.Debug("AWS credential provider using named profile", "profile", cfg.Profile, "role_arn", cfg.RoleARN)
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("loading AWS config: %w", err)
 	}
 
+	source := cfg.Source
+	if source == "" {
+		source = "role"
+	}
+	slog.Debug("AWS credential provider created",
+		"source", source, "role_arn", cfg.RoleARN, "profile", cfg.Profile)
 	return &CredentialProvider{
+		source:          source,
 		roleARN:         cfg.RoleARN,
 		region:          cfg.Region,
 		sessionDuration: cfg.SessionDuration,
 		externalID:      cfg.ExternalID,
 		sessionName:     sessionName,
 		stsClient:       sts.NewFromConfig(awsCfg),
+		profileCreds:    awsCfg.Credentials,
 	}, nil
 }
 
@@ -91,15 +103,18 @@ func (p *CredentialProvider) RoleARN() string {
 	return p.roleARN
 }
 
+// profileCacheDefault bounds how long we cache profile-mode credentials
+// when the underlying source declares CanExpire=false. Avoids both
+// hot-pathing the credential_process and pinning forever.
+const profileCacheDefault = 15 * time.Minute
+
 // GetCredentials returns cached credentials or fetches new ones.
 func (p *CredentialProvider) GetCredentials(ctx context.Context) (*Credentials, error) {
-	// Check context before proceeding
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
 	p.mu.RLock()
-	// Return cached if valid with buffer before expiration
 	if p.cached != nil && time.Now().Add(credentialRefreshBuffer).Before(p.expiration) {
 		creds := p.cached
 		p.mu.RUnlock()
@@ -107,16 +122,22 @@ func (p *CredentialProvider) GetCredentials(ctx context.Context) (*Credentials, 
 	}
 	p.mu.RUnlock()
 
-	// Need to refresh
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Double-check after acquiring write lock
 	if p.cached != nil && time.Now().Add(credentialRefreshBuffer).Before(p.expiration) {
 		return p.cached, nil
 	}
 
-	// Call STS AssumeRole
+	switch p.source {
+	case "profile":
+		return p.fetchFromProfile(ctx)
+	default: // "role"
+		return p.fetchViaAssumeRole(ctx)
+	}
+}
+
+func (p *CredentialProvider) fetchViaAssumeRole(ctx context.Context) (*Credentials, error) {
 	input := &sts.AssumeRoleInput{
 		RoleArn:         awssdk.String(p.roleARN),
 		RoleSessionName: awssdk.String(p.sessionName),
@@ -142,7 +163,35 @@ func (p *CredentialProvider) GetCredentials(ctx context.Context) (*Credentials, 
 		Expiration:      awssdk.ToTime(result.Credentials.Expiration),
 	}
 	p.expiration = awssdk.ToTime(result.Credentials.Expiration)
+	return p.cached, nil
+}
 
+func (p *CredentialProvider) fetchFromProfile(ctx context.Context) (*Credentials, error) {
+	if p.profileCreds == nil {
+		return nil, fmt.Errorf("profile credentials provider is nil")
+	}
+	creds, err := p.profileCreds.Retrieve(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("retrieving credentials from profile: %w", err)
+	}
+	if creds.AccessKeyID == "" {
+		return nil, fmt.Errorf("profile returned empty credentials")
+	}
+	exp := creds.Expires
+	if !creds.CanExpire || exp.IsZero() {
+		// Source declares no expiration (e.g., static keys). Bound the cache
+		// so we still re-Retrieve at a sensible cadence; the SDK
+		// CredentialsCache will answer most re-Retrieves from its own cache
+		// when the underlying provider is non-expiring.
+		exp = time.Now().Add(profileCacheDefault)
+	}
+	p.cached = &Credentials{
+		AccessKeyID:     creds.AccessKeyID,
+		SecretAccessKey: creds.SecretAccessKey,
+		SessionToken:    creds.SessionToken,
+		Expiration:      exp,
+	}
+	p.expiration = exp
 	return p.cached, nil
 }
 

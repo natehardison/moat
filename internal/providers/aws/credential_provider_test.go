@@ -253,3 +253,87 @@ func TestCredentialProvider_RefreshesExpiredCredentials(t *testing.T) {
 }
 
 // mockSTSClient is defined in provider_test.go — reused here.
+
+func TestCredentialProviderProfileModeSkipsAssumeRole(t *testing.T) {
+	// In profile mode, GetCredentials must serve from the AWS SDK credentials
+	// provider directly and MUST NOT call sts:AssumeRole.
+	failOnAssumeRole := &assumeRoleShouldNotBeCalled{t: t}
+	fakeExpires := time.Now().Add(30 * time.Minute)
+
+	p := &CredentialProvider{
+		source:          "profile",
+		region:          "us-west-2",
+		sessionDuration: 15 * time.Minute,
+		stsClient:       failOnAssumeRole, // fails the test if invoked
+		profileCreds: staticCredentialsProvider{
+			creds: awssdk.Credentials{
+				AccessKeyID:     "AKIDPROFILE",
+				SecretAccessKey: "SECRET",
+				SessionToken:    "TOKEN",
+				Expires:         fakeExpires,
+				CanExpire:       true,
+			},
+		},
+	}
+
+	got, err := p.GetCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("GetCredentials: %v", err)
+	}
+	if got.AccessKeyID != "AKIDPROFILE" {
+		t.Errorf("AccessKeyID = %q, want AKIDPROFILE", got.AccessKeyID)
+	}
+	if got.SessionToken != "TOKEN" {
+		t.Errorf("SessionToken = %q, want TOKEN", got.SessionToken)
+	}
+	if !got.Expiration.Equal(fakeExpires) {
+		t.Errorf("Expiration = %v, want %v", got.Expiration, fakeExpires)
+	}
+}
+
+func TestCredentialProviderProfileModeHandlesNonExpiringSource(t *testing.T) {
+	// If the underlying source returns CanExpire=false (e.g., static keys),
+	// the provider must still set a finite cached expiration (defensive
+	// refresh window) so it re-Retrieves at a sensible cadence.
+	p := &CredentialProvider{
+		source:          "profile",
+		region:          "us-west-2",
+		sessionDuration: 15 * time.Minute,
+		stsClient:       &assumeRoleShouldNotBeCalled{t: t},
+		profileCreds: staticCredentialsProvider{
+			creds: awssdk.Credentials{
+				AccessKeyID:     "AKIDSTATIC",
+				SecretAccessKey: "SECRET",
+				CanExpire:       false, // perpetual
+			},
+		},
+	}
+	got, err := p.GetCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("GetCredentials: %v", err)
+	}
+	if got.AccessKeyID != "AKIDSTATIC" {
+		t.Errorf("AccessKeyID = %q, want AKIDSTATIC", got.AccessKeyID)
+	}
+	// Verify the provider chose a non-zero, finite expiration to drive refresh.
+	if got.Expiration.IsZero() || got.Expiration.After(time.Now().Add(time.Hour)) {
+		t.Errorf("Expiration = %v, want a finite near-future time (defensive refresh window)", got.Expiration)
+	}
+}
+
+// assumeRoleShouldNotBeCalled is an STSAssumeRoler that fails the test if invoked.
+type assumeRoleShouldNotBeCalled struct{ t *testing.T }
+
+func (a *assumeRoleShouldNotBeCalled) AssumeRole(_ context.Context, _ *sts.AssumeRoleInput, _ ...func(*sts.Options)) (*sts.AssumeRoleOutput, error) {
+	a.t.Fatal("AssumeRole must not be called in profile mode")
+	return nil, nil
+}
+
+// staticCredentialsProvider implements awssdk.CredentialsProvider for tests.
+type staticCredentialsProvider struct {
+	creds awssdk.Credentials
+}
+
+func (s staticCredentialsProvider) Retrieve(_ context.Context) (awssdk.Credentials, error) {
+	return s.creds, nil
+}

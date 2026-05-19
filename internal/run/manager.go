@@ -892,6 +892,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 					awsProvider, err := awsprov.NewCredentialProvider(
 						ctx,
 						awsprov.CredentialProviderConfig{
+							Source:          awsCfg.Source,
 							RoleARN:         awsCfg.RoleARN,
 							Region:          awsCfg.Region,
 							SessionDuration: awsCfg.SessionDuration,
@@ -909,6 +910,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 					// Store config for daemon registration so the daemon can
 					// create its own AWSCredentialProvider.
 					runCtx.AWSConfig = &daemon.AWSConfig{
+						Source:          awsCfg.Source,
 						RoleARN:         awsCfg.RoleARN,
 						Region:          awsCfg.Region,
 						SessionDuration: awsCfg.SessionDuration,
