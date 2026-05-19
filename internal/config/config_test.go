@@ -2659,3 +2659,50 @@ claude:
 		t.Errorf("models.opus = %q", cfg.Claude.Bedrock.Models.Opus)
 	}
 }
+
+func TestBedrockValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name:    "missing aws grant",
+			yaml:    "agent: claude\nclaude:\n  bedrock:\n    enabled: true\n",
+			wantErr: "claude.bedrock requires the \"aws\" grant",
+		},
+		{
+			name:    "conflicts with base_url",
+			yaml:    "agent: claude\ngrants: [aws]\nclaude:\n  base_url: https://x.test\n  bedrock:\n    enabled: true\n",
+			wantErr: "claude.bedrock is mutually exclusive with base_url",
+		},
+		{
+			name:    "conflicts with llm-gateway",
+			yaml:    "agent: claude\ngrants: [aws]\nclaude:\n  llm-gateway: {}\n  bedrock:\n    enabled: true\n",
+			wantErr: "claude.bedrock is mutually exclusive with llm-gateway",
+		},
+		{
+			name:    "valid",
+			yaml:    "agent: claude\ngrants: [aws]\nclaude:\n  bedrock:\n    enabled: true\n",
+			wantErr: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "moat.yaml"), []byte(tc.yaml), 0644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(dir)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}

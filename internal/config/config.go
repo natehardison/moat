@@ -641,6 +641,25 @@ func Load(dir string) (*Config, error) {
 		return nil, fmt.Errorf("claude: base_url and llm-gateway are mutually exclusive — base_url routes to an external LLM proxy, llm-gateway routes to a local Keep sidecar")
 	}
 
+	if cfg.Claude.Bedrock != nil && cfg.Claude.Bedrock.Enabled {
+		hasAWS := false
+		for _, g := range cfg.Grants {
+			if g == "aws" || strings.HasPrefix(g, "aws:") {
+				hasAWS = true
+				break
+			}
+		}
+		if !hasAWS {
+			return nil, fmt.Errorf("claude.bedrock requires the \"aws\" grant — add 'aws' to grants and run 'moat grant aws <role-arn>'")
+		}
+		if cfg.Claude.BaseURL != "" {
+			return nil, fmt.Errorf("claude.bedrock is mutually exclusive with base_url — Bedrock authenticates via AWS, base_url routes to an Anthropic-API proxy")
+		}
+		if cfg.Claude.LLMGateway != nil {
+			return nil, fmt.Errorf("claude.bedrock is mutually exclusive with llm-gateway — Bedrock authenticates via AWS, llm-gateway routes to a local Keep sidecar")
+		}
+	}
+
 	// Validate Codex MCP server specs
 	for name, spec := range cfg.Codex.MCP {
 		if err := validateMCPServerSpec("codex", name, spec); err != nil {
