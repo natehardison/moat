@@ -23,6 +23,9 @@ import (
 // credentialRefreshBuffer is the time before expiration when credentials should be refreshed.
 const credentialRefreshBuffer = 5 * time.Minute
 
+// formatClaude is the ?format= value selecting the Claude Code awsCredentialExport envelope.
+const formatClaude = "claude"
+
 // Credentials holds temporary AWS credentials.
 type Credentials struct {
 	AccessKeyID     string
@@ -98,6 +101,25 @@ func (h *EndpointHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.URL.Query().Get("format") == formatClaude {
+		// Claude Code awsCredentialExport envelope (spec §3.0). No Version /
+		// Expiration fields; refresh cadence is governed by
+		// CLAUDE_CODE_API_KEY_HELPER_TTL_MS, not Expiration.
+		resp := map[string]interface{}{
+			"Credentials": map[string]interface{}{
+				"AccessKeyId":     creds.AccessKeyID,
+				"SecretAccessKey": creds.SecretAccessKey,
+				"SessionToken":    creds.SessionToken,
+			},
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			ui.Warnf("Failed to encode AWS credentials response: %v", err)
+		}
+		return
+	}
+
 	// AWS credential_process format
 	// See: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sourcing-external.html
 	resp := map[string]interface{}{
@@ -107,8 +129,6 @@ func (h *EndpointHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"SessionToken":    creds.SessionToken,
 		"Expiration":      creds.Expiration.Format(time.RFC3339),
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		// Response already started, can't send HTTP error. Log and continue.
 		ui.Warnf("Failed to encode AWS credentials response: %v", err)
