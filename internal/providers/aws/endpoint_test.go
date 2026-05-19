@@ -40,13 +40,15 @@ func TestEndpointClaudeFormat(t *testing.T) {
 	}
 	var got struct {
 		Credentials struct {
-			AccessKeyId, SecretAccessKey, SessionToken string
+			AccessKeyID     string `json:"AccessKeyId"`
+			SecretAccessKey string `json:"SecretAccessKey"`
+			SessionToken    string `json:"SessionToken"`
 		}
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
 	}
-	if got.Credentials.AccessKeyId == "" || got.Credentials.SecretAccessKey == "" || got.Credentials.SessionToken == "" {
+	if got.Credentials.AccessKeyID == "" || got.Credentials.SecretAccessKey == "" || got.Credentials.SessionToken == "" {
 		t.Errorf("claude envelope missing creds: %s", rec.Body.String())
 	}
 }
