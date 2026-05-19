@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
 	"github.com/majorcontext/moat/internal/log"
 	"github.com/majorcontext/moat/internal/provider"
@@ -180,10 +182,13 @@ func grantViaSetupToken(ctx context.Context) (*provider.Credential, error) {
 	token := extractOAuthToken(output.String())
 
 	if token == "" {
+		const hint = "\n\nWorkaround: run 'claude setup-token' yourself, then " +
+			"'moat grant claude' and choose the paste-existing-token option " +
+			"(or import existing credentials)."
 		if cmdErr != nil {
-			return nil, fmt.Errorf("claude setup-token failed: %w", cmdErr)
+			return nil, fmt.Errorf("claude setup-token failed: %w%s", cmdErr, hint)
 		}
-		return nil, fmt.Errorf("could not find OAuth token in claude setup-token output")
+		return nil, fmt.Errorf("could not extract OAuth token from claude setup-token output%s", hint)
 	}
 
 	if cmdErr != nil {
@@ -273,135 +278,79 @@ func grantViaExistingOAuthToken(ctx context.Context) (*provider.Credential, erro
 	return cred, nil
 }
 
-// extractOAuthToken extracts the OAuth token from claude setup-token output.
+// oauthTokenPrefix is the public format prefix of a Claude Code OAuth token.
+const oauthTokenPrefix = "sk-ant-oat01-"
+
+// extractOAuthToken extracts the OAuth token from `claude setup-token` output.
 //
-// The token format is: sk-ant-oat01-<base64-data>
-// The token appears on its own line(s) between descriptive text.
+// The token format is: sk-ant-oat01-<body>.
 //
-// The Claude CLI output varies:
-// - Sometimes uses \n for newlines with blank lines as \n\n or \n<spaces>\n
-// - Sometimes uses \r with ANSI cursor codes: \x1b[1B (down 1), \x1b[2B (down 2 = blank line)
+// The Claude CLI renders setup-token as an Ink TUI: the token is painted with
+// absolute cursor-column moves inside synchronized-output frames, so the
+// literal token string never appears contiguously in the captured byte stream
+// (a substring/ANSI-strip approach cannot work — the prefix is split by
+// \x1b[NG cursor moves and some glyphs exist only as screen positions).
 //
-// Strategy:
-// 1. Find "sk-ant-oat01-" in the raw output
-// 2. Extract until we hit a "blank line" indicator:
-//   - \x1b[2B (ANSI cursor down 2+)
-//   - \n followed by whitespace-only line followed by \n
-//
-// 3. Clean the extracted block (strip ANSI codes and whitespace)
+// Instead we replay the captured PTY bytes through a virtual terminal
+// emulator and read the token off the rendered screen — exactly what the user
+// sees. This also handles plain, non-TUI output: a token printed as a normal
+// line renders verbatim on the emulated screen.
 func extractOAuthToken(output string) string {
-	// Find the start of the token in raw output
-	const prefix = "sk-ant-oat01-"
-	startIdx := strings.Index(output, prefix)
+	// Width must exceed the largest cursor column the CLI addresses (the token
+	// line ends near column ~120). Height is generous so the CLI's
+	// relative-cursor redraws never scroll content into lost scrollback — it
+	// uses only relative vertical moves, no absolute row addressing.
+	const width, height = 1024, 256
+
+	em := vt.NewEmulator(width, height)
+
+	// The CLI probes the terminal (Primary DA "\x1b[c", DSR, DECRQM, ...). The
+	// emulator answers by writing to its input pipe, which has no reader and
+	// blocks WriteString forever. We don't need the replies — this is a
+	// one-shot scrape of already-captured output — so suppress every query
+	// handler. Registered after NewEmulator, these run before the library
+	// defaults (CSI handlers dispatch last-registered-first) and short-circuit
+	// them, keeping extraction single-goroutine (no drain, no data race).
+	suppress := func(ansi.Params) bool { return true }
+	for _, cmd := range []int{
+		'c',                         // Primary Device Attributes
+		'n',                         // Device Status Report
+		ansi.Command('>', 0, 'c'),   // Secondary Device Attributes
+		ansi.Command('?', 0, 'n'),   // Extended Cursor Position Report
+		ansi.Command(0, '$', 'p'),   // Request Mode (DECRQM, ANSI)
+		ansi.Command('?', '$', 'p'), // Request Mode (DECRQM, DEC)
+	} {
+		em.RegisterCsiHandler(cmd, suppress)
+	}
+
+	_, _ = em.WriteString(output)
+	_ = em.Close()
+
+	screen := em.String()
+
+	startIdx := strings.Index(screen, oauthTokenPrefix)
 	if startIdx == -1 {
-		log.Debug("no token prefix found in output",
+		log.Debug("no token prefix on rendered screen",
 			"subsystem", "grant",
 			"action", "extract_token",
-			"output_len", len(output),
+			"screen_len", len(screen),
 		)
 		return ""
 	}
 
-	log.Debug("found token prefix",
-		"subsystem", "grant",
-		"action", "extract_token",
-		"start_idx", startIdx,
-		"output_len", len(output),
-	)
-
-	// Extract until we hit a "blank line" indicator
-	endIdx := len(output)
-	endReason := "end_of_output"
-	for i := startIdx; i < len(output); i++ {
-		// Check for ANSI cursor down 2+ lines: \x1b[NB where N >= 2
-		// This is used by Claude CLI to create visual blank lines
-		if output[i] == '\x1b' && i+3 < len(output) && output[i+1] == '[' {
-			// Parse the number before 'B'
-			j := i + 2
-			for j < len(output) && output[j] >= '0' && output[j] <= '9' {
-				j++
-			}
-			if j < len(output) && output[j] == 'B' && j > i+2 {
-				n := 0
-				for k := i + 2; k < j; k++ {
-					n = n*10 + int(output[k]-'0')
-				}
-				if n >= 2 {
-					// Find the \r or start of this escape sequence
-					endIdx = i
-					// Back up past any preceding \r
-					for endIdx > startIdx && output[endIdx-1] == '\r' {
-						endIdx--
-					}
-					endReason = fmt.Sprintf("ansi_cursor_down_%d", n)
-					goto done
-				}
-			}
-		}
-
-		// Check for blank line: \n followed by only whitespace until next \n
-		if output[i] == '\n' {
-			lineStart := i + 1
-			isBlank := true
-			for j := lineStart; j < len(output); j++ {
-				c := output[j]
-				if c == '\n' {
-					// Found end of line
-					if isBlank {
-						endIdx = i
-						endReason = "blank_line"
-						goto done
-					}
-					break
-				}
-				if c != ' ' && c != '\t' && c != '\r' {
-					break // Non-whitespace found, not a blank line
-				}
-			}
-		}
-	}
-done:
-
-	tokenBlock := output[startIdx:endIdx]
-	log.Debug("token block extracted",
-		"subsystem", "grant",
-		"action", "extract_token",
-		"end_reason", endReason,
-		"block_len", len(tokenBlock),
-	)
-	if log.Verbose() {
-		log.Debug("token block raw content",
-			"subsystem", "grant",
-			"action", "extract_token",
-			"raw_block", fmt.Sprintf("%q", tokenBlock),
-		)
-	}
-
-	// Now clean the token block: strip ANSI and extract only token characters
-	cleaned := stripANSI(tokenBlock)
-
-	// Extract only valid token characters, tracking what was removed
 	var token strings.Builder
-	var removed strings.Builder
-	for i := 0; i < len(cleaned); i++ {
-		c := cleaned[i]
-		if isTokenChar(c) {
-			token.WriteByte(c)
-		} else {
-			removed.WriteString(fmt.Sprintf("[%d]=%q ", i, string(c)))
-		}
+	for i := startIdx; i < len(screen) && isTokenChar(screen[i]); i++ {
+		token.WriteByte(screen[i])
 	}
-
 	result := token.String()
-	log.Debug("token extraction complete",
+
+	log.Debug("token extracted from rendered screen",
 		"subsystem", "grant",
 		"action", "extract_token",
 		"result_len", len(result),
-		"cleaned_len", len(cleaned),
-		"removed_chars", removed.String(),
 	)
 
-	// Validate the token looks reasonable
+	// Validate the token looks reasonable.
 	if len(result) < 60 {
 		log.Debug("token too short, rejecting",
 			"subsystem", "grant",
@@ -419,27 +368,6 @@ done:
 func isTokenChar(c byte) bool {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
 		(c >= '0' && c <= '9') || c == '_' || c == '-'
-}
-
-// stripANSI removes ANSI escape sequences from a string.
-func stripANSI(s string) string {
-	var result strings.Builder
-	inEscape := false
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			// ANSI sequences end with a letter
-			if (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z') {
-				inEscape = false
-			}
-			continue
-		}
-		result.WriteByte(s[i])
-	}
-	return result.String()
 }
 
 // grantViaAPIKey prompts for an API key.

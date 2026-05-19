@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.6
 	github.com/aymanbagabas/go-nativeclipboard v0.1.3
+	github.com/charmbracelet/x/ansi v0.11.4
 	github.com/charmbracelet/x/vt v0.0.0-20260127155452-b72a9a918687
 	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
@@ -60,7 +61,6 @@ require (
 	github.com/charmbracelet/colorprofile v0.3.3 // indirect
 	github.com/charmbracelet/lipgloss v0.5.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20251106193841-7889546fc720 // indirect
-	github.com/charmbracelet/x/ansi v0.11.4 // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
