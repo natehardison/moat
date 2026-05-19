@@ -694,6 +694,18 @@ moat grant aws \
     --session-duration 30m
 ```
 
+### Self-hosted YAML providers (--host)
+
+For YAML-defined providers (e.g. `gitlab`, `sentry`, `datadog`, `linear`, `vercel`, `elevenlabs`, `brave-search`, `telegram`), `--host` writes a user override at `~/.moat/providers/<name>.yaml` that routes credential injection and token validation to a custom host. Use this for self-hosted deployments.
+
+```bash
+moat grant gitlab --host gitlab.acme.com
+```
+
+Hostname must be a bare DNS name -- no scheme, port, or path. Subsequent `moat run --grant <name>` invocations pick up the override automatically. To remove the override, delete `~/.moat/providers/<name>.yaml`. See [Grants reference](./04-grants.md) for per-provider details.
+
+`--host` is not supported for Go-implemented providers (github, anthropic, claude, openai, gemini, npm, aws) — those use fixed hosts. (The `moat grant npm --host` flag exists for a different purpose: specifying a registry host within npm's host-allowlist model.)
+
 ### moat grant list
 
 List stored credentials. Shows credentials from the active profile, or the default store if no profile is set.
