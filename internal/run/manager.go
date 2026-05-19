@@ -899,9 +899,8 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 					anthropicCred = provCred
 				}
 
-				// Handle AWS endpoint provider
-				if ep := provider.GetEndpoint(string(credName)); ep != nil {
-					// AWS credentials are handled via credential endpoint
+				// Handle AWS credential provider setup.
+				if credName == credential.ProviderAWS {
 					// Parse stored config from Metadata (new format) with fallback to Scopes (legacy)
 					awsCfg, err := awsprov.ConfigFromCredential(provCred)
 					if err != nil {
@@ -911,6 +910,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 					awsProvider, err := awsprov.NewCredentialProvider(
 						ctx,
 						awsprov.CredentialProviderConfig{
+							Source:          awsCfg.Source,
 							RoleARN:         awsCfg.RoleARN,
 							Region:          awsCfg.Region,
 							SessionDuration: awsCfg.SessionDuration,
@@ -928,6 +928,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 					// Store config for daemon registration so the daemon can
 					// create its own AWSCredentialProvider.
 					runCtx.AWSConfig = &daemon.AWSConfig{
+						Source:          awsCfg.Source,
 						RoleARN:         awsCfg.RoleARN,
 						Region:          awsCfg.Region,
 						SessionDuration: awsCfg.SessionDuration,

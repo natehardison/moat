@@ -7,26 +7,50 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	moatconfig "github.com/majorcontext/moat/internal/config"
 )
+
+// credentialRefreshBuffer is the time before expiration when credentials should be refreshed.
+const credentialRefreshBuffer = 5 * time.Minute
+
+// formatClaude is the ?format= value selecting the Claude Code awsCredentialExport envelope.
+const formatClaude = "claude"
+
+// Credentials holds temporary AWS credentials.
+type Credentials struct {
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+	Expiration      time.Time
+}
+
+// STSAssumeRoler interface for STS AssumeRole operation (enables testing).
+type STSAssumeRoler interface {
+	AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
+}
 
 // CredentialProviderConfig holds the configuration needed to create a CredentialProvider.
 type CredentialProviderConfig struct {
+	Source          string // "role" (default) or "profile"
 	RoleARN         string
 	Region          string
 	SessionDuration time.Duration
 	ExternalID      string
-	Profile         string // AWS shared config profile (AWS_PROFILE) used to assume the role
+	Profile         string // AWS shared config profile
 }
 
 // CredentialProvider manages AWS credential fetching and caching for proxy use.
 // It creates an http.Handler that serves credentials in ECS container format.
 type CredentialProvider struct {
+	source          string // "role" or "profile"
 	roleARN         string
 	region          string
 	sessionDuration time.Duration
@@ -38,8 +62,12 @@ type CredentialProvider struct {
 	cached     *Credentials
 	expiration time.Time
 
-	// stsClient for making AssumeRole calls (injectable for testing)
+	// stsClient is used in role mode.
 	stsClient STSAssumeRoler
+	// profileCreds is used in profile mode (set by NewCredentialProvider from
+	// the loaded awsCfg.Credentials, which the SDK wraps in a CredentialsCache
+	// that natively handles credential_process / SSO refresh).
+	profileCreds awssdk.CredentialsProvider
 }
 
 // NewCredentialProvider creates a new AWS credential provider.
@@ -47,24 +75,30 @@ type CredentialProvider struct {
 // (equivalent to AWS_PROFILE) so the correct source identity is used
 // for AssumeRole regardless of which process creates the provider.
 func NewCredentialProvider(ctx context.Context, cfg CredentialProviderConfig, sessionName string) (*CredentialProvider, error) {
-	// Load AWS config from host environment
 	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region)}
 	if cfg.Profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(cfg.Profile))
-		slog.Debug("AWS credential provider using named profile", "profile", cfg.Profile, "role_arn", cfg.RoleARN)
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("loading AWS config: %w", err)
 	}
 
+	source := cfg.Source
+	if source == "" {
+		source = "role"
+	}
+	slog.Debug("AWS credential provider created",
+		"source", source, "role_arn", cfg.RoleARN, "profile", cfg.Profile)
 	return &CredentialProvider{
+		source:          source,
 		roleARN:         cfg.RoleARN,
 		region:          cfg.Region,
 		sessionDuration: cfg.SessionDuration,
 		externalID:      cfg.ExternalID,
 		sessionName:     sessionName,
 		stsClient:       sts.NewFromConfig(awsCfg),
+		profileCreds:    awsCfg.Credentials,
 	}, nil
 }
 
@@ -78,6 +112,8 @@ func (p *CredentialProvider) Handler() http.Handler {
 	return &credentialProviderHandler{
 		getCredentials: p.GetCredentials,
 		authToken:      p.authToken,
+		roleARN:        p.roleARN,
+		source:         p.source,
 	}
 }
 
@@ -91,15 +127,18 @@ func (p *CredentialProvider) RoleARN() string {
 	return p.roleARN
 }
 
+// profileCacheDefault bounds how long we cache profile-mode credentials
+// when the underlying source declares CanExpire=false. Avoids both
+// hot-pathing the credential_process and pinning forever.
+const profileCacheDefault = 15 * time.Minute
+
 // GetCredentials returns cached credentials or fetches new ones.
 func (p *CredentialProvider) GetCredentials(ctx context.Context) (*Credentials, error) {
-	// Check context before proceeding
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
 	p.mu.RLock()
-	// Return cached if valid with buffer before expiration
 	if p.cached != nil && time.Now().Add(credentialRefreshBuffer).Before(p.expiration) {
 		creds := p.cached
 		p.mu.RUnlock()
@@ -107,16 +146,22 @@ func (p *CredentialProvider) GetCredentials(ctx context.Context) (*Credentials, 
 	}
 	p.mu.RUnlock()
 
-	// Need to refresh
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Double-check after acquiring write lock
 	if p.cached != nil && time.Now().Add(credentialRefreshBuffer).Before(p.expiration) {
 		return p.cached, nil
 	}
 
-	// Call STS AssumeRole
+	switch p.source {
+	case "profile":
+		return p.fetchFromProfile(ctx)
+	default: // "role"
+		return p.fetchViaAssumeRole(ctx)
+	}
+}
+
+func (p *CredentialProvider) fetchViaAssumeRole(ctx context.Context) (*Credentials, error) {
 	input := &sts.AssumeRoleInput{
 		RoleArn:         awssdk.String(p.roleARN),
 		RoleSessionName: awssdk.String(p.sessionName),
@@ -142,7 +187,35 @@ func (p *CredentialProvider) GetCredentials(ctx context.Context) (*Credentials, 
 		Expiration:      awssdk.ToTime(result.Credentials.Expiration),
 	}
 	p.expiration = awssdk.ToTime(result.Credentials.Expiration)
+	return p.cached, nil
+}
 
+func (p *CredentialProvider) fetchFromProfile(ctx context.Context) (*Credentials, error) {
+	if p.profileCreds == nil {
+		return nil, fmt.Errorf("profile credentials provider is nil")
+	}
+	creds, err := p.profileCreds.Retrieve(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("retrieving credentials from profile: %w", err)
+	}
+	if creds.AccessKeyID == "" {
+		return nil, fmt.Errorf("profile returned empty credentials")
+	}
+	exp := creds.Expires
+	if !creds.CanExpire || exp.IsZero() {
+		// Source declares no expiration (e.g., static keys). Bound the cache
+		// so we still re-Retrieve at a sensible cadence; the SDK
+		// CredentialsCache will answer most re-Retrieves from its own cache
+		// when the underlying provider is non-expiring.
+		exp = time.Now().Add(profileCacheDefault)
+	}
+	p.cached = &Credentials{
+		AccessKeyID:     creds.AccessKeyID,
+		SecretAccessKey: creds.SecretAccessKey,
+		SessionToken:    creds.SessionToken,
+		Expiration:      exp,
+	}
+	p.expiration = exp
 	return p.cached, nil
 }
 
@@ -150,6 +223,9 @@ func (p *CredentialProvider) GetCredentials(ctx context.Context) (*Credentials, 
 type credentialProviderHandler struct {
 	getCredentials func(ctx context.Context) (*Credentials, error)
 	authToken      string // Required auth token (from AWS_CONTAINER_AUTHORIZATION_TOKEN)
+	roleARN        string // IAM role ARN used for error classification
+	// source is "role" or "profile" — controls error-message phrasing.
+	source string
 }
 
 // ServeHTTP implements http.Handler, returning credentials in ECS format.
@@ -167,9 +243,28 @@ func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 
 	creds, err := h.getCredentials(r.Context())
 	if err != nil {
-		// Log detailed error server-side but return generic message to prevent leaking sensitive info
-		slog.Error("AWS credential fetch error", "error", err)
-		http.Error(w, "failed to get credentials", http.StatusInternalServerError)
+		slog.Error("AWS credential fetch error", "error", err, "role", h.roleARN, "source", h.source)
+		msg := classifyAWSError(err, h.roleARN, h.source)
+		http.Error(w, msg, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.URL.Query().Get("format") == formatClaude {
+		// Claude Code awsCredentialExport envelope. No Version / Expiration
+		// fields; refresh cadence is governed by
+		// CLAUDE_CODE_API_KEY_HELPER_TTL_MS, not Expiration.
+		resp := map[string]any{
+			"Credentials": map[string]any{
+				"AccessKeyId":     creds.AccessKeyID,
+				"SecretAccessKey": creds.SecretAccessKey,
+				"SessionToken":    creds.SessionToken,
+			},
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			slog.Warn("Failed to encode AWS credentials response", "error", err)
+		}
 		return
 	}
 
@@ -182,10 +277,91 @@ func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		"SessionToken":    creds.SessionToken,
 		"Expiration":      creds.Expiration.Format(time.RFC3339),
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		// Response already started, can't send HTTP error. Log and continue.
 		slog.Warn("Failed to encode AWS credentials response", "error", err)
+	}
+}
+
+// classifyAWSError returns an actionable, user-visible error message for common
+// AWS credential failures. It is used by credentialProviderHandler to produce
+// helpful output that the container credential helper script will display.
+// source should be "role" or "profile" — it controls error-message phrasing
+// for the cases that are mode-specific.
+func classifyAWSError(err error, roleARN, source string) string {
+	msg := err.Error()
+	daemonLog := filepath.Join(moatconfig.GlobalConfigDir(), "debug", "daemon.log")
+
+	switch {
+	case strings.Contains(msg, "AccessDenied"):
+		if source == "profile" {
+			return fmt.Sprintf(`AWS credential error: access denied
+
+The profile credential source rejected the request, or the resolved credentials
+lack permission for the API being called.
+Check that:
+  1. The broker tool (credential_process) successfully issues credentials
+  2. The resolved identity has the required permissions for the AWS API call
+
+Check the daemon log: %s`, daemonLog)
+		}
+		// role mode (or empty for backward compat)
+		arn := roleARN
+		if arn == "" {
+			arn = "<unknown>"
+		}
+		return fmt.Sprintf(`AWS credential error: access denied assuming role %s
+
+Your host AWS identity does not have permission to assume this role.
+Check that:
+  1. The role's trust policy allows your AWS identity
+  2. Your IAM user/role has sts:AssumeRole permission
+
+Run 'moat grant aws' to reconfigure, or check the daemon log:
+  %s`, arn, daemonLog)
+
+	case strings.Contains(msg, "no EC2 IMDS role found") ||
+		strings.Contains(msg, "failed to refresh cached credentials"):
+		if source == "profile" {
+			return `AWS credential error: profile yielded no credentials
+
+The named profile's credential_process (or default chain) failed to produce credentials.
+Verify on your host:
+  aws --profile <name> sts get-caller-identity
+If the profile uses credential_process, ensure the command is on PATH and that
+any required session is active (e.g. SSO login).`
+		}
+		// role mode (or empty for backward compat)
+		arn := roleARN
+		if arn == "" {
+			arn = "<unknown>"
+		}
+		return fmt.Sprintf(`AWS credential error: no host credentials found
+
+The moat daemon cannot find AWS credentials to assume role %s.
+The daemon runs on your host machine, not inside the container.
+
+Ensure one of these is configured on your host:
+  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY environment variables
+  - ~/.aws/credentials file
+  - AWS SSO session (run 'aws sso login')
+
+Run 'aws sts get-caller-identity' on your host to verify.`, arn)
+
+	case strings.Contains(msg, "ExpiredToken") || strings.Contains(msg, "ExpiredTokenException"):
+		return `AWS credential error: host credentials expired
+
+Your host AWS credentials have expired. Refresh them:
+  - For SSO: aws sso login
+  - For temporary credentials: re-export AWS_SESSION_TOKEN
+
+Then retry — the daemon will pick up the new credentials automatically.`
+
+	case strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "context canceled"):
+		return "AWS credential error: request canceled or timed out. Retry or check network connectivity."
+
+	default:
+		return fmt.Sprintf("AWS credential error: unexpected error fetching credentials.\n\nCheck the daemon log for details: %s", daemonLog)
 	}
 }

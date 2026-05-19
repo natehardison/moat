@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"github.com/majorcontext/moat/internal/credential"
@@ -124,13 +123,4 @@ type InitFileProvider interface {
 	// writes each entry to disk with mode 0600 before executing the user's
 	// command.
 	ContainerInitFiles(cred *Credential, containerHome string) map[string]string
-}
-
-// EndpointProvider exposes HTTP endpoints to containers.
-// Implemented by aws for the credential endpoint.
-type EndpointProvider interface {
-	CredentialProvider
-
-	// RegisterEndpoints registers HTTP handlers on the proxy mux.
-	RegisterEndpoints(mux *http.ServeMux, cred *Credential)
 }

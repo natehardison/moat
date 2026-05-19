@@ -9,6 +9,7 @@ Moat is pre-1.0. The CLI interface and `moat.yaml` schema may change between min
 ### Added
 
 - **Claude on AWS Bedrock** — `claude.bedrock` in `moat.yaml` routes Claude Code through AWS Bedrock using the `aws` grant's STS role, via Claude Code's `awsCredentialExport` hook. Adds `claude.env` for merging arbitrary vars into Claude Code's `settings.json` env block (honors the host `~/.claude/settings.json` env). ([#NNN](https://github.com/majorcontext/moat/pull/NNN))
+- **AWS credential pass-through** — `moat grant aws --aws-profile <name>` (no `--role`) stores a profile-based credential; moat serves the profile's resolved credentials directly without calling `sts:AssumeRole`. Useful for Claude-on-Bedrock and other AWS workloads in environments where the operator has no usable base IAM identity (SSO / `credential_process` brokers issuing role-scoped credentials directly). ([#NNN](https://github.com/majorcontext/moat/pull/NNN))
 
 ## v0.5.1 — 2026-04-28
 

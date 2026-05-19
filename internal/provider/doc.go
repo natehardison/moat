@@ -3,7 +3,8 @@
 // All providers implement CredentialProvider for credential acquisition,
 // proxy configuration, and container setup. Agent providers (Claude, Codex, Gemini)
 // additionally implement AgentProvider for container preparation and CLI commands.
-// Endpoint providers (AWS) implement EndpointProvider to expose HTTP endpoints.
+// AWS credentials are served via a CredentialProvider instance registered by the
+// run manager; there is no separate endpoint-provider concept.
 //
 // Providers are registered explicitly via Register() and looked up via Get().
 package provider
