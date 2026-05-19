@@ -252,7 +252,19 @@ func TestCredentialProvider_RefreshesExpiredCredentials(t *testing.T) {
 	}
 }
 
-// mockSTSClient is defined in provider_test.go — reused here.
+func TestCredentialProvider_Region(t *testing.T) {
+	p := &CredentialProvider{region: "ap-southeast-2"}
+	if got := p.Region(); got != "ap-southeast-2" {
+		t.Errorf("Region() = %q, want ap-southeast-2", got)
+	}
+}
+
+func TestCredentialProvider_RoleARN(t *testing.T) {
+	p := &CredentialProvider{roleARN: "arn:aws:iam::123456789012:role/MyRole"}
+	if got := p.RoleARN(); got != "arn:aws:iam::123456789012:role/MyRole" {
+		t.Errorf("RoleARN() = %q, want the configured ARN", got)
+	}
+}
 
 func TestCredentialProviderProfileModeSkipsAssumeRole(t *testing.T) {
 	// In profile mode, GetCredentials must serve from the AWS SDK credentials
@@ -319,6 +331,15 @@ func TestCredentialProviderProfileModeHandlesNonExpiringSource(t *testing.T) {
 	if got.Expiration.IsZero() || got.Expiration.After(time.Now().Add(time.Hour)) {
 		t.Errorf("Expiration = %v, want a finite near-future time (defensive refresh window)", got.Expiration)
 	}
+}
+
+// mockSTSClient implements STSAssumeRoler for testing.
+type mockSTSClient struct {
+	assumeRoleFn func(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
+}
+
+func (m *mockSTSClient) AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error) {
+	return m.assumeRoleFn(ctx, params, optFns...)
 }
 
 // assumeRoleShouldNotBeCalled is an STSAssumeRoler that fails the test if invoked.

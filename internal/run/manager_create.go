@@ -467,9 +467,8 @@ func (m *Manager) Create(ctx context.Context, opts Options) (resRun *Run, retErr
 					anthropicCred = provCred
 				}
 
-				// Handle AWS endpoint provider
-				if ep := provider.GetEndpoint(string(credName)); ep != nil {
-					// AWS credentials are handled via credential endpoint
+				// Handle AWS credential provider setup.
+				if credName == credential.ProviderAWS {
 					// Parse stored config from Metadata (new format) with fallback to Scopes (legacy)
 					awsCfg, err := awsprov.ConfigFromCredential(provCred)
 					if err != nil {

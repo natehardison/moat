@@ -7,13 +7,32 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	moatconfig "github.com/majorcontext/moat/internal/config"
 )
+
+// credentialRefreshBuffer is the time before expiration when credentials should be refreshed.
+const credentialRefreshBuffer = 5 * time.Minute
+
+// Credentials holds temporary AWS credentials.
+type Credentials struct {
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+	Expiration      time.Time
+}
+
+// STSAssumeRoler interface for STS AssumeRole operation (enables testing).
+type STSAssumeRoler interface {
+	AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
+}
 
 // CredentialProviderConfig holds the configuration needed to create a CredentialProvider.
 type CredentialProviderConfig struct {
@@ -90,6 +109,7 @@ func (p *CredentialProvider) Handler() http.Handler {
 	return &credentialProviderHandler{
 		getCredentials: p.GetCredentials,
 		authToken:      p.authToken,
+		roleARN:        p.roleARN,
 	}
 }
 
@@ -199,6 +219,7 @@ func (p *CredentialProvider) fetchFromProfile(ctx context.Context) (*Credentials
 type credentialProviderHandler struct {
 	getCredentials func(ctx context.Context) (*Credentials, error)
 	authToken      string // Required auth token (from AWS_CONTAINER_AUTHORIZATION_TOKEN)
+	roleARN        string // IAM role ARN used for error classification
 }
 
 // ServeHTTP implements http.Handler, returning credentials in ECS format.
@@ -216,9 +237,9 @@ func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 
 	creds, err := h.getCredentials(r.Context())
 	if err != nil {
-		// Log detailed error server-side but return generic message to prevent leaking sensitive info
-		slog.Error("AWS credential fetch error", "error", err)
-		http.Error(w, "failed to get credentials", http.StatusInternalServerError)
+		slog.Error("AWS credential fetch error", "error", err, "role", h.roleARN)
+		msg := classifyAWSError(err, h.roleARN)
+		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
 
@@ -236,5 +257,56 @@ func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		// Response already started, can't send HTTP error. Log and continue.
 		slog.Warn("Failed to encode AWS credentials response", "error", err)
+	}
+}
+
+// classifyAWSError returns an actionable, user-visible error message for common
+// AWS credential failures. It is used by credentialProviderHandler to produce
+// helpful output that the container credential helper script will display.
+func classifyAWSError(err error, roleARN string) string {
+	msg := err.Error()
+	daemonLog := filepath.Join(moatconfig.GlobalConfigDir(), "debug", "daemon.log")
+
+	switch {
+	case strings.Contains(msg, "AccessDenied"):
+		return fmt.Sprintf(`AWS credential error: access denied assuming role %s
+
+Your host AWS identity does not have permission to assume this role.
+Check that:
+  1. The role's trust policy allows your AWS identity
+  2. Your IAM user/role has sts:AssumeRole permission
+
+Run 'moat grant aws' to reconfigure, or check the daemon log:
+  %s`, roleARN, daemonLog)
+
+	case strings.Contains(msg, "no EC2 IMDS role found") ||
+		strings.Contains(msg, "failed to refresh cached credentials"):
+		return fmt.Sprintf(`AWS credential error: no host credentials found
+
+The moat daemon cannot find AWS credentials to assume role %s.
+The daemon runs on your host machine, not inside the container.
+
+Ensure one of these is configured on your host:
+  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY environment variables
+  - ~/.aws/credentials file
+  - AWS SSO session (run 'aws sso login')
+
+Run 'aws sts get-caller-identity' on your host to verify.`, roleARN)
+
+	case strings.Contains(msg, "ExpiredToken") || strings.Contains(msg, "ExpiredTokenException"):
+		return `AWS credential error: host credentials expired
+
+Your host AWS credentials have expired. Refresh them:
+  - For SSO: aws sso login
+  - For temporary credentials: re-export AWS_SESSION_TOKEN
+
+Then retry — the daemon will pick up the new credentials automatically.`
+
+	case strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "context canceled"):
+		return "AWS credential error: request canceled or timed out. Retry or check network connectivity."
+
+	default:
+		return fmt.Sprintf("AWS credential error: unexpected error fetching credentials.\n\nCheck the daemon log for details: %s", daemonLog)
 	}
 }
