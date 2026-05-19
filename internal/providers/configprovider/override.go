@@ -99,6 +99,13 @@ func EmbeddedProviderNames() []string {
 	return names
 }
 
+// ParseProviderDef parses raw YAML bytes into a ProviderDef. Exported wrapper
+// around the package-internal parser so the CLI can validate user override
+// files without re-implementing parsing.
+func ParseProviderDef(data []byte) (ProviderDef, error) {
+	return parseProviderDef(data)
+}
+
 // labelRE matches a single DNS label per RFC 1123: lowercase letters, digits,
 // hyphens; no leading or trailing hyphen; 1-63 chars.
 var labelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
