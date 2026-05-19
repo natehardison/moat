@@ -42,7 +42,7 @@ Run:
 moat claude ./my-project
 ```
 
-Moat sets `CLAUDE_CODE_USE_BEDROCK=1` and the Bedrock model ID vars, then injects short-lived STS credentials via Claude Code's `awsCredentialExport` hook.
+Moat sets `CLAUDE_CODE_USE_BEDROCK=1` and the Bedrock model ID vars, then injects short-lived STS credentials via Claude Code's `awsCredentialExport` hook. Note: top-level `env:` entries in `moat.yaml` are injected as process environment variables and take precedence over moat's Bedrock defaults, so setting `CLAUDE_CODE_USE_BEDROCK` or similar vars there will override moat's values.
 
 ## How credentials flow
 
@@ -146,13 +146,17 @@ If credentials are not refreshing, check that the IAM role trust policy allows `
 
 ## Troubleshooting
 
-### "Bedrock mode needs grants: [aws]"
+### `claude.bedrock requires the "aws" grant — add 'aws' to grants and run 'moat grant aws <role-arn>'`
 
 Add `aws` to `grants:` in `moat.yaml` and run `moat grant aws <role-arn>`.
 
-### "claude.bedrock is mutually exclusive with claude.base_url / claude.llm-gateway"
+### `claude.bedrock is mutually exclusive with base_url — Bedrock authenticates via AWS, base_url routes to an Anthropic-API proxy`
 
-Remove `claude.base_url` or `claude.llm-gateway` from `moat.yaml`. Both fields set `ANTHROPIC_BASE_URL`, which conflicts with Bedrock authentication.
+Remove `claude.base_url` from `moat.yaml`. Bedrock uses AWS credentials for authentication; an Anthropic-API proxy URL conflicts with that path.
+
+### `claude.bedrock is mutually exclusive with llm-gateway — Bedrock authenticates via AWS, llm-gateway routes to a local Keep sidecar`
+
+Remove `claude.llm-gateway` from `moat.yaml`. Bedrock authenticates via AWS and does not route traffic through a Keep sidecar.
 
 ### AccessDeniedException from Bedrock
 
