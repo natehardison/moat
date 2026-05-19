@@ -3,11 +3,13 @@ package configprovider
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/majorcontext/moat/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // LoadEmbeddedDef reads and parses the embedded YAML definition for the
@@ -59,6 +61,23 @@ func ApplyHostOverride(def ProviderDef, host string) (ProviderDef, error) {
 	}
 
 	return out, nil
+}
+
+// WriteUserOverride marshals def to YAML and writes it to UserOverridePath(name),
+// creating the providers directory if it does not already exist.
+func WriteUserOverride(name string, def ProviderDef) error {
+	path := UserOverridePath(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating providers dir: %w", err)
+	}
+	data, err := yaml.Marshal(def)
+	if err != nil {
+		return fmt.Errorf("marshaling provider def: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing override file %s: %w", path, err)
+	}
+	return nil
 }
 
 // EmbeddedProviderNames returns the sorted list of provider names that

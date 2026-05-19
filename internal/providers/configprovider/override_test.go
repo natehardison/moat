@@ -1,6 +1,7 @@
 package configprovider
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -151,5 +152,61 @@ func TestApplyHostOverride_UserinfoValidateURL(t *testing.T) {
 	}
 	if _, err := ApplyHostOverride(def, "y.example.com"); err == nil {
 		t.Errorf("ApplyHostOverride err = nil, want error for validate URL with userinfo")
+	}
+}
+
+func TestWriteUserOverride_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("MOAT_HOME", tmp)
+
+	def, err := LoadEmbeddedDef("gitlab")
+	if err != nil {
+		t.Fatalf("LoadEmbeddedDef: %v", err)
+	}
+	overridden, err := ApplyHostOverride(def, "gitlab.acme.com")
+	if err != nil {
+		t.Fatalf("ApplyHostOverride: %v", err)
+	}
+
+	if err := WriteUserOverride("gitlab", overridden); err != nil {
+		t.Fatalf("WriteUserOverride: %v", err)
+	}
+
+	path := UserOverridePath("gitlab")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+
+	parsed, err := parseProviderDef(data)
+	if err != nil {
+		t.Fatalf("parseProviderDef on written YAML: %v", err)
+	}
+	if len(parsed.Hosts) != 1 || parsed.Hosts[0] != "gitlab.acme.com" {
+		t.Errorf("round-trip Hosts = %v, want [gitlab.acme.com]", parsed.Hosts)
+	}
+	if parsed.Validate == nil || parsed.Validate.URL != "https://gitlab.acme.com/api/v4/user" {
+		t.Errorf("round-trip Validate.URL = %+v, want https://gitlab.acme.com/api/v4/user", parsed.Validate)
+	}
+	if parsed.Name != "gitlab" {
+		t.Errorf("round-trip Name = %q", parsed.Name)
+	}
+}
+
+func TestWriteUserOverride_CreatesDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("MOAT_HOME", tmp)
+	def, _ := LoadEmbeddedDef("gitlab")
+	overridden, _ := ApplyHostOverride(def, "gitlab.acme.com")
+
+	if err := WriteUserOverride("gitlab", overridden); err != nil {
+		t.Fatalf("WriteUserOverride: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(tmp, "providers"))
+	if err != nil {
+		t.Fatalf("providers dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("providers path is not a directory")
 	}
 }
