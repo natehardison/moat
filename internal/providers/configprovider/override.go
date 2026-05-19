@@ -2,6 +2,7 @@ package configprovider
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +29,36 @@ func LoadEmbeddedDef(name string) (ProviderDef, error) {
 // override YAML file under <GlobalConfigDir>/providers/.
 func UserOverridePath(name string) string {
 	return filepath.Join(config.GlobalConfigDir(), "providers", name+".yaml")
+}
+
+// ApplyHostOverride returns a copy of def with Hosts replaced by [host] and
+// Validate.URL rewritten so its host component matches the user's host.
+// The original def is not mutated. Pure function — no I/O.
+func ApplyHostOverride(def ProviderDef, host string) (ProviderDef, error) {
+	out := def
+	out.Hosts = []string{host}
+
+	if def.Validate != nil {
+		u, err := url.Parse(def.Validate.URL)
+		if err != nil {
+			return ProviderDef{}, fmt.Errorf("parsing validate URL %q: %w", def.Validate.URL, err)
+		}
+		if u.Host == "" {
+			return ProviderDef{}, fmt.Errorf("validate URL %q has no host", def.Validate.URL)
+		}
+		if u.User != nil {
+			return ProviderDef{}, fmt.Errorf("validate URL %q has userinfo, not supported", def.Validate.URL)
+		}
+		// Replace only the host portion in the raw URL string to preserve any
+		// placeholder tokens (e.g. ${token}) that url.String() would percent-encode.
+		oldPrefix := u.Scheme + "://" + u.Host
+		newPrefix := u.Scheme + "://" + host
+		validateCopy := *def.Validate
+		validateCopy.URL = newPrefix + strings.TrimPrefix(def.Validate.URL, oldPrefix)
+		out.Validate = &validateCopy
+	}
+
+	return out, nil
 }
 
 // EmbeddedProviderNames returns the sorted list of provider names that
