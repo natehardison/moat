@@ -183,9 +183,10 @@ func readPassword() ([]byte, error) {
 	return []byte(strings.TrimSuffix(line, "\n")), err
 }
 
-// errOverrideAborted signals that the user declined to overwrite an existing
-// user override. Returned by runHostOverride so runGrant can exit non-zero
-// without printing a generic error.
+// errOverrideAborted signals that the user declined (or could not be asked,
+// in a non-TTY session) to overwrite an existing user override. Cobra prints
+// the wrapped message via its default error handling; the non-zero exit is
+// what matters.
 var errOverrideAborted = errors.New("aborted: existing override not overwritten")
 
 // runHostOverride validates the host, loads the embedded provider def, applies

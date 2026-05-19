@@ -8,7 +8,7 @@ Moat is pre-1.0. The CLI interface and `moat.yaml` schema may change between min
 
 ### Added
 
-- **Self-hosted host override on `moat grant`** — `moat grant gitlab --host gitlab.acme.com` writes a user provider YAML at `~/.moat/providers/gitlab.yaml` that routes credential injection and token validation to a custom host. Works for any built-in YAML provider (gitlab, sentry, datadog, linear, vercel, elevenlabs, brave-search, telegram). Use it to grant credentials for self-hosted deployments without hand-authoring a YAML override.
+- **Self-hosted host override on `moat grant`** — `moat grant gitlab --host gitlab.acme.com` writes a user provider YAML at `~/.moat/providers/gitlab.yaml` that routes credential injection and token validation to a custom host. Works for any built-in YAML provider (gitlab, sentry, datadog, linear, vercel, elevenlabs, brave-search, telegram). Use it to grant credentials for self-hosted deployments without hand-authoring a YAML override. ([#TBD](https://github.com/majorcontext/moat/pull/TBD))
 
 ## v0.5.1 — 2026-04-28
 

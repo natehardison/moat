@@ -65,6 +65,13 @@ func TestGrantMCP(t *testing.T) {
 	}
 }
 
+// The --host flow has two branches that are not covered at the CLI level:
+// (1) existing override file + different host + stdin "y" → overwrites and grants;
+// (2) existing override file + different host + non-TTY stdin → aborts with errOverrideAborted.
+// Both would require either a terminal mock or an HTTP mock for the grant validate call.
+// The underlying logic is covered by unit tests in configprovider/override_test.go and by
+// manual smoke tests; if you change writeOverrideIfChanged, exercise these paths by hand.
+
 func TestGrantHost_UnsupportedProvider(t *testing.T) {
 	t.Setenv("MOAT_HOME", t.TempDir())
 	t.Setenv("MOAT_KEYRING_SERVICE", "moat-test")
