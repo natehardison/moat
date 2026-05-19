@@ -784,6 +784,25 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 		}
 	}
 
+	// Load merged Claude settings which includes:
+	// - ~/.claude/plugins/known_marketplaces.json (marketplace URLs)
+	// - ~/.claude/settings.json (enabled plugins)
+	// - ~/.moat/claude/settings.json (moat user defaults)
+	// - <workspace>/.claude/settings.json (project settings)
+	// - moat.yaml claude.* fields (run overrides)
+	// Loaded here — before the proxy/AWS block — so the AWS credential and
+	// Bedrock env wiring in the proxy section can consume claudeSettings
+	// (e.g. AWS_PROFILE / AWS_REGION from the merged settings env).
+	var claudeSettings *claude.Settings
+	if opts.Config != nil {
+		var loadErr error
+		claudeSettings, loadErr = claude.LoadAllSettings(opts.Workspace, opts.Config)
+		if loadErr != nil {
+			cleanupDaemonRun()
+			return nil, fmt.Errorf("loading Claude settings: %w", loadErr)
+		}
+	}
+
 	if needsProxyForGrants || needsProxyForFirewall || needsProxyForConfig {
 		// Daemon directory for proxy state (CA certs, lock file, socket)
 		daemonDir := filepath.Join(config.GlobalConfigDir(), "proxy")
@@ -1598,22 +1617,6 @@ region = %s
 				proxyEnv = append(proxyEnv, "DOCKER_BUILDKIT=0")
 				proxyEnv = append(proxyEnv, "MOAT_DISABLE_BUILDKIT=1")
 			}
-		}
-	}
-
-	// Load merged Claude settings which includes:
-	// - ~/.claude/plugins/known_marketplaces.json (marketplace URLs)
-	// - ~/.claude/settings.json (enabled plugins)
-	// - ~/.moat/claude/settings.json (moat user defaults)
-	// - <workspace>/.claude/settings.json (project settings)
-	// - moat.yaml claude.* fields (run overrides)
-	var claudeSettings *claude.Settings
-	if opts.Config != nil {
-		var loadErr error
-		claudeSettings, loadErr = claude.LoadAllSettings(opts.Workspace, opts.Config)
-		if loadErr != nil {
-			cleanupDaemonRun()
-			return nil, fmt.Errorf("loading Claude settings: %w", loadErr)
 		}
 	}
 
