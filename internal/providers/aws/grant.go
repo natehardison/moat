@@ -22,6 +22,10 @@ const (
 	MetaKeySessionDuration = "session_duration"
 	MetaKeyExternalID      = "external_id"
 	MetaKeyProfile         = "profile"
+	// MetaKeySource selects the credential acquisition path:
+	//   "role"    (default): moat calls sts:AssumeRole on the stored RoleARN.
+	//   "profile" (new):     moat serves the named profile's resolved creds directly.
+	MetaKeySource = "source"
 )
 
 // Default values.
@@ -59,6 +63,7 @@ type Config struct {
 	SessionDuration time.Duration
 	ExternalID      string
 	Profile         string // AWS shared config profile (AWS_PROFILE) used to assume the role
+	Source          string // "role" (default, AssumeRole) | "profile" (serve profile creds directly, no AssumeRole)
 }
 
 // grant acquires AWS credentials by prompting for an IAM role ARN.
@@ -262,6 +267,31 @@ func ConfigFromCredential(cred *provider.Credential) (*Config, error) {
 		if profile := cred.Metadata[MetaKeyProfile]; profile != "" {
 			cfg.Profile = profile
 		}
+		if s := cred.Metadata[MetaKeySource]; s != "" {
+			cfg.Source = s
+		}
+	}
+
+	// Resolve source mode (defaults to "role" for backward compatibility with
+	// credentials stored before this field existed).
+	if cfg.Source == "" {
+		cfg.Source = "role"
+	}
+
+	switch cfg.Source {
+	case "role":
+		if cfg.RoleARN == "" {
+			return nil, fmt.Errorf("source=role requires a role ARN")
+		}
+	case "profile":
+		if cfg.RoleARN != "" {
+			return nil, fmt.Errorf("source=profile must not carry a role ARN (credential Token must be empty)")
+		}
+		if cfg.Profile == "" {
+			return nil, fmt.Errorf("source=profile requires the \"profile\" metadata key")
+		}
+	default:
+		return nil, fmt.Errorf("unknown source %q (expected \"role\" or \"profile\")", cfg.Source)
 	}
 
 	// Fallback to legacy Scopes format: [region, sessionDuration, externalID]
