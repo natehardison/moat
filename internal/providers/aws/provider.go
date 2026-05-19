@@ -31,7 +31,7 @@ func (p *Provider) Name() string {
 	return "aws"
 }
 
-// Grant acquires AWS credentials by prompting for an IAM role ARN.
+// Grant acquires AWS credentials in one of two modes (role-assumption or profile pass-through), selected by the inputs in the request context.
 func (p *Provider) Grant(ctx context.Context) (*provider.Credential, error) {
 	return grant(ctx)
 }
