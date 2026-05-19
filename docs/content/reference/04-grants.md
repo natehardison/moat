@@ -647,6 +647,37 @@ Granted SSH access to github.com
 $ moat run --grant ssh:github.com -- git clone git@github.com:my-org/my-project.git
 ```
 
+## GitLab
+
+GitLab credentials are stored as `gitlab.enc`. The provider injects `PRIVATE-TOKEN: <token>` on requests to `gitlab.com` and `*.gitlab.com` by default.
+
+### CLI command
+
+```bash
+moat grant gitlab
+```
+
+### Credential sources
+
+1. **Environment variable** -- `GITLAB_TOKEN` or `GL_TOKEN`
+2. **Interactive prompt** -- if neither env var is set
+
+### What it injects
+
+`PRIVATE-TOKEN: <token>` on requests to the configured GitLab hosts.
+
+### Self-hosted GitLab
+
+For a self-hosted GitLab instance, pass `--host` when granting:
+
+```bash
+moat grant gitlab --host gitlab.acme.com
+```
+
+This writes `~/.moat/providers/gitlab.yaml`, which routes credential injection and token validation to your host. Subsequent `moat run --grant gitlab` uses the override automatically.
+
+To rotate the token without changing the host, run `moat grant gitlab` (no flag). To change the host, re-run with a new `--host` value — Moat prompts before overwriting an existing override. To remove the override, delete `~/.moat/providers/gitlab.yaml`.
+
 ## MCP
 
 ### CLI command
