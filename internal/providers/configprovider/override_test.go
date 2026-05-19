@@ -3,6 +3,7 @@ package configprovider
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -208,5 +209,53 @@ func TestWriteUserOverride_CreatesDir(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Fatalf("providers path is not a directory")
+	}
+}
+
+func TestValidateHostname_Accept(t *testing.T) {
+	cases := []string{
+		"gitlab.acme.com",
+		"git.foo.bar.example",
+		"a-b.example.io",
+		"x.y.z",
+		"sub-domain.example.co.uk",
+	}
+	for _, h := range cases {
+		t.Run(h, func(t *testing.T) {
+			if err := ValidateHostname(h); err != nil {
+				t.Errorf("ValidateHostname(%q) = %v, want nil", h, err)
+			}
+		})
+	}
+}
+
+func TestValidateHostname_Reject(t *testing.T) {
+	longLabel := strings.Repeat("a", 64)
+	longHost := strings.Repeat("a.", 130) + "com" // > 253 chars total
+
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"scheme", "https://gitlab.acme.com"},
+		{"path", "gitlab.acme.com/path"},
+		{"port", "gitlab.acme.com:8080"},
+		{"query", "gitlab.acme.com?x=1"},
+		{"userinfo", "user@gitlab.acme.com"},
+		{"no dot", "localhost"},
+		{"leading dash", "-leading.example.com"},
+		{"trailing dash", "trailing-.example.com"},
+		{"label too long", longLabel + ".example.com"},
+		{"hostname too long", longHost},
+		{"uppercase", "GitLab.example.com"},
+		{"underscore", "git_lab.example.com"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := ValidateHostname(c.in); err == nil {
+				t.Errorf("ValidateHostname(%q) = nil, want error", c.in)
+			}
+		})
 	}
 }

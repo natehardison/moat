@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -96,4 +97,32 @@ func EmbeddedProviderNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// labelRE matches a single DNS label per RFC 1123: lowercase letters, digits,
+// hyphens; no leading or trailing hyphen; 1-63 chars.
+var labelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ValidateHostname returns an error if host is not a bare DNS hostname.
+// Rejects schemes, paths, queries, ports, userinfo, single-label names, and
+// labels that violate RFC 1123.
+func ValidateHostname(host string) error {
+	if host == "" {
+		return fmt.Errorf("--host must be a bare hostname (e.g., gitlab.acme.com), got %q", host)
+	}
+	if len(host) > 253 {
+		return fmt.Errorf("--host exceeds 253 chars: %q", host)
+	}
+	if strings.ContainsAny(host, ":/?#@") {
+		return fmt.Errorf("--host must be a bare hostname (e.g., gitlab.acme.com), got %q", host)
+	}
+	if !strings.Contains(host, ".") {
+		return fmt.Errorf("--host must include a domain (e.g., gitlab.acme.com), got %q", host)
+	}
+	for _, label := range strings.Split(host, ".") {
+		if !labelRE.MatchString(label) {
+			return fmt.Errorf("--host has invalid label %q (RFC 1123: lowercase letters, digits, hyphens; no leading/trailing hyphen; ≤1-63 chars)", label)
+		}
+	}
+	return nil
 }
