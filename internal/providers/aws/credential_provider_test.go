@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -330,6 +331,36 @@ func TestCredentialProviderProfileModeHandlesNonExpiringSource(t *testing.T) {
 	// Verify the provider chose a non-zero, finite expiration to drive refresh.
 	if got.Expiration.IsZero() || got.Expiration.After(time.Now().Add(time.Hour)) {
 		t.Errorf("Expiration = %v, want a finite near-future time (defensive refresh window)", got.Expiration)
+	}
+}
+
+func TestClassifyAWSError_ProfileMode(t *testing.T) {
+	err := fmt.Errorf("AccessDenied: cannot perform operation")
+	msg := classifyAWSError(err, "" /*roleARN*/, "profile")
+	if strings.Contains(msg, "assuming role") {
+		t.Errorf("profile-mode AccessDenied message must not mention role assumption: %s", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "access denied") {
+		t.Errorf("profile-mode AccessDenied message should still mention access denied: %s", msg)
+	}
+}
+
+func TestClassifyAWSError_RoleMode(t *testing.T) {
+	err := fmt.Errorf("AccessDenied: cannot perform operation")
+	msg := classifyAWSError(err, "arn:aws:iam::123:role/X", "role")
+	if !strings.Contains(msg, "arn:aws:iam::123:role/X") {
+		t.Errorf("role-mode AccessDenied message must mention the role ARN: %s", msg)
+	}
+}
+
+func TestClassifyAWSError_NoIMDS_ProfileMode(t *testing.T) {
+	err := fmt.Errorf("failed to refresh cached credentials, no EC2 IMDS role found")
+	msg := classifyAWSError(err, "", "profile")
+	if strings.Contains(msg, "assume role") {
+		t.Errorf("profile-mode no-creds message must not mention role assumption: %s", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "profile") {
+		t.Errorf("profile-mode no-creds message should mention 'profile': %s", msg)
 	}
 }
 
