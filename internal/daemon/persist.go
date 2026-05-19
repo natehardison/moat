@@ -248,6 +248,7 @@ func RestoreRuns(ctx context.Context, registry *Registry, runs []PersistedRun) i
 			awsProvider, awsErr := awsprov.NewCredentialProvider(
 				runCtx,
 				awsprov.CredentialProviderConfig{
+					Source:          pr.AWSConfig.Source,
 					RoleARN:         pr.AWSConfig.RoleARN,
 					Region:          pr.AWSConfig.Region,
 					SessionDuration: pr.AWSConfig.SessionDuration,
