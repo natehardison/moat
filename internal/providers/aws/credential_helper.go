@@ -19,6 +19,12 @@ if [ -z "$MOAT_AWS_CREDENTIAL_URL" ]; then
     exit 1
   fi
 fi
+if [ "$1" = "--claude" ]; then
+  case "$MOAT_AWS_CREDENTIAL_URL" in
+    *\?*) MOAT_AWS_CREDENTIAL_URL="$MOAT_AWS_CREDENTIAL_URL&format=claude" ;;
+    *) MOAT_AWS_CREDENTIAL_URL="$MOAT_AWS_CREDENTIAL_URL?format=claude" ;;
+  esac
+fi
 TMPWORK=$(mktemp -d /tmp/moat-aws-XXXXXX) || { echo "moat: failed to create temp dir" >&2; exit 1; }
 trap 'rm -rf "$TMPWORK"' EXIT
 if [ -n "$MOAT_AWS_CREDENTIAL_TOKEN" ]; then
