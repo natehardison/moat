@@ -6,6 +6,10 @@ Moat is pre-1.0. The CLI interface and `moat.yaml` schema may change between min
 
 ## Unreleased
 
+### Added
+
+- **Self-hosted host override on `moat grant`** — `moat grant gitlab --host gitlab.acme.com` writes a user provider YAML at `~/.moat/providers/gitlab.yaml` that routes credential injection and token validation to a custom host. Works for any built-in YAML provider (gitlab, sentry, datadog, linear, vercel, elevenlabs, brave-search, telegram). Use it to grant credentials for self-hosted deployments without hand-authoring a YAML override.
+
 ## v0.5.1 — 2026-04-28
 
 Patch release with one security fix (IPv6 egress firewall) and a batch of run-lifecycle and proxy fixes. Adds `MOAT_HOME` for relocating moat state, a multi-runtime manager so Docker and Apple containers can coexist in one install, TUI debug shortcuts, and Python 3.13/3.14 support. Gatekeeper is extracted to its own repository.
