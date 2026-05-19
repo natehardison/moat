@@ -2623,3 +2623,39 @@ func TestNetworkHostConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadClaudeBedrockConfig(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+agent: claude
+grants:
+  - aws
+claude:
+  env:
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+  bedrock:
+    enabled: true
+    region: us-east-1
+    models:
+      opus: custom.opus.id
+`
+	if err := os.WriteFile(filepath.Join(dir, "moat.yaml"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Claude.Env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] != "1" {
+		t.Errorf("claude.env not parsed: %#v", cfg.Claude.Env)
+	}
+	if cfg.Claude.Bedrock == nil || !cfg.Claude.Bedrock.Enabled {
+		t.Fatalf("bedrock not parsed: %#v", cfg.Claude.Bedrock)
+	}
+	if cfg.Claude.Bedrock.Region != "us-east-1" {
+		t.Errorf("region = %q, want us-east-1", cfg.Claude.Bedrock.Region)
+	}
+	if cfg.Claude.Bedrock.Models.Opus != "custom.opus.id" {
+		t.Errorf("models.opus = %q", cfg.Claude.Bedrock.Models.Opus)
+	}
+}

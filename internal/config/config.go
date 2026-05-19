@@ -277,10 +277,35 @@ type ClaudeConfig struct {
 	// Mutually exclusive with BaseURL.
 	LLMGateway *LLMGatewayConfig `yaml:"llm-gateway,omitempty"`
 
+	// Env is merged into the container's ~/.claude/settings.json "env" block.
+	// Generic passthrough mirroring Claude Code's native settings.json env.
+	// Use it for corp hygiene vars (telemetry/autoupdater off), AWS_REGION, etc.
+	Env map[string]string `yaml:"env,omitempty"`
+
+	// Bedrock routes Claude Code through AWS Bedrock instead of the Anthropic
+	// API. Requires the "aws" grant. nil = disabled.
+	Bedrock *BedrockConfig `yaml:"bedrock,omitempty"`
+
 	// SkipPermissionsPrompt controls whether to suppress the bypass-permissions
 	// warning in Claude Code. Set automatically by moat when
 	// --dangerously-skip-permissions is being passed. Not a moat.yaml field.
 	SkipPermissionsPrompt bool `yaml:"-"`
+}
+
+// BedrockConfig configures Claude Code → AWS Bedrock routing.
+type BedrockConfig struct {
+	Enabled bool          `yaml:"enabled"`
+	Region  string        `yaml:"region,omitempty"` // optional; overrides AWS grant region
+	Models  BedrockModels `yaml:"models,omitempty"`
+}
+
+// BedrockModels overrides individual Bedrock model IDs. Empty fields fall
+// back to built-in defaults (see internal/providers/claude/bedrock.go).
+type BedrockModels struct {
+	Haiku  string `yaml:"haiku,omitempty"`
+	Sonnet string `yaml:"sonnet,omitempty"`
+	Opus   string `yaml:"opus,omitempty"`
+	Custom string `yaml:"custom,omitempty"` // maps to ANTHROPIC_CUSTOM_MODEL_OPTION (user-selectable extra model in the picker)
 }
 
 // CodexConfig configures OpenAI Codex CLI integration options.
