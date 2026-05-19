@@ -58,11 +58,11 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(grantCmd)
-	grantCmd.Flags().StringVar(&awsRole, "role", "", "IAM role ARN to assume (required for aws)")
+	grantCmd.Flags().StringVar(&awsRole, "role", "", "IAM role ARN to assume (role mode; required unless --aws-profile is given)")
 	grantCmd.Flags().StringVar(&awsRegion, "region", "", "AWS region (default: us-east-1)")
 	grantCmd.Flags().StringVar(&awsSessionDuration, "session-duration", "", "Session duration (default: 15m, max: 12h)")
 	grantCmd.Flags().StringVar(&awsExternalID, "external-id", "", "External ID for role assumption")
-	grantCmd.Flags().StringVar(&awsProfile, "aws-profile", "", "AWS shared config profile for role assumption (falls back to AWS_PROFILE env var if not set)")
+	grantCmd.Flags().StringVar(&awsProfile, "aws-profile", "", "AWS shared config profile: pass-through mode (no --role) or source profile in role mode; falls back to AWS_PROFILE env var if not set")
 }
 
 // saveCredential stores a credential and returns the file path.
@@ -103,18 +103,28 @@ func runGrant(cmd *cobra.Command, args []string) error {
 			args[0])
 	}
 
-	// For AWS, validate required flags before calling Grant
-	if providerName == "aws" && awsRole == "" {
-		return fmt.Errorf(`--role is required for AWS grant
+	// For AWS, require either --role (AssumeRole mode) or --aws-profile
+	// (pass-through mode). Bare invocation is a footgun (would silently
+	// use whatever the daemon host's default credential chain yields).
+	if providerName == "aws" && awsRole == "" && awsProfile == "" {
+		return fmt.Errorf(`moat grant aws requires either an IAM role ARN to assume or an explicit AWS profile to pass through
 
-Usage: moat grant aws --role=arn:aws:iam::ACCOUNT:role/ROLE_NAME
+Examples:
+  moat grant aws --role=arn:aws:iam::ACCOUNT:role/ROLE_NAME
+      Stores a role ARN; moat calls sts:AssumeRole each time creds are needed.
+
+  moat grant aws --aws-profile=corp-broker
+      Stores the profile name; moat serves the profile's resolved credentials
+      directly (the profile's credential_process must already yield usable creds).
+      Use this when you have no base IAM identity and your org issues
+      role-scoped credentials directly (SSO / credential_process brokers).
 
 Options:
-  --role             IAM role ARN to assume (required)
+  --role             IAM role ARN to assume (role mode)
+  --aws-profile      AWS shared config profile (pass-through mode, or role-mode source; falls back to AWS_PROFILE env var)
   --region           AWS region (default: us-east-1)
-  --session-duration Session duration (default: 15m, max: 12h)
-  --external-id      External ID for role assumption
-  --aws-profile      AWS shared config profile (falls back to AWS_PROFILE env var)`)
+  --session-duration Session duration (default: 15m, max: 12h; role mode only)
+  --external-id      External ID for role assumption (role mode only)`)
 	}
 
 	// Call the provider's Grant method
