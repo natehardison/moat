@@ -6,6 +6,10 @@ Moat is pre-1.0. The CLI interface and `moat.yaml` schema may change between min
 
 ## Unreleased
 
+### Added
+
+- **AWS credential pass-through** — `moat grant aws --aws-profile <name>` (no `--role`) stores a profile-based credential; moat serves the profile's resolved credentials directly without calling `sts:AssumeRole`. Useful for Claude-on-Bedrock and other AWS workloads in environments where the operator has no usable base IAM identity (SSO / `credential_process` brokers issuing role-scoped credentials directly). ([#NNN](https://github.com/majorcontext/moat/pull/NNN))
+
 ## v0.5.1 — 2026-04-28
 
 Patch release with one security fix (IPv6 egress firewall) and a batch of run-lifecycle and proxy fixes. Adds `MOAT_HOME` for relocating moat state, a multi-runtime manager so Docker and Apple containers can coexist in one install, TUI debug shortcuts, and Python 3.13/3.14 support. Gatekeeper is extracted to its own repository.
