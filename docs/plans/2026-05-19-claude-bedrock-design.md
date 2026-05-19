@@ -25,9 +25,18 @@ Anthropic API, by reusing moat's existing AWS STS `AssumeRole` +
 | | Agentbox | moat (chosen) |
 |---|---|---|
 | Creds in container | Dummy `~/.aws/config`; proxy re-signs SigV4 | Real **short-lived STS** creds via `credential_process` (existing `/moat/aws/credentials` helper + `/_aws/credentials` endpoint) |
-| Signing | Proxy (agentproxy `sigv4.py`) | Claude Code's Node AWS SDK signs; proxy MITM-observes via existing CA bundle |
+| Signing | Proxy (agentproxy `sigv4.py`) | Claude Code's bundled AWS SDK (Rust) signs; proxy MITM-observes via existing CA bundle |
 | Proxy changes | N/A | **None** |
 | Blast radius | Would need gatekeeper changes | Additive: `internal/config`, `internal/providers/claude`, one gated block in `internal/run/manager.go` |
+
+> **Pre-implementation verification (blocking).** Claude Code is a Rust
+> binary. agentbox proves it reads **static keys** from `~/.aws/config` /
+> `AWS_PROFILE`, but **not** that its bundled AWS SDK for Rust honors
+> `credential_process` or `AWS_CONTAINER_CREDENTIALS_FULL_URI` — which is what
+> moat's existing AWS path relies on. The plan's first step must verify this
+> against the actual Claude Code binary (e.g. a throwaway run with a
+> `credential_process` that logs invocation). If unsupported, use the
+> **static-creds fallback** (3.10).
 
 Decision (confirmed): **moat-native endpoint**. The AWS provider already does
 `AssumeRole`, serves creds at `/_aws/credentials`, mounts the
@@ -90,8 +99,9 @@ vars** (highest precedence — see 3.4):
   plus their `_NAME` companions
 - `AWS_SDK_UA_APP_ID=ClaudeCode-Sandbox` (attribution; harmless)
 
-Deliberately **not** ported: `AWS_SDK_LOAD_CONFIG=1` (Go-SDK-only; Claude Code
-is Node and reads `credential_process` natively).
+Deliberately **not** ported: `AWS_SDK_LOAD_CONFIG=1` — it is an AWS SDK for
+**Go v1** flag with no effect on Claude Code's bundled **Rust** AWS SDK, which
+reads `~/.aws/config` (and the credential chain) unconditionally.
 
 ### 3.3 Host settings `env` block becomes first-class (`internal/providers/claude/settings.go`)
 
@@ -169,6 +179,18 @@ The granted role must allow `bedrock:InvokeModel` /
 `bedrock:InvokeModelWithResponseStream` (and `bedrock:ListFoundationModels`
 for the model picker). Documented, not enforced by moat.
 
+### 3.10 Static-creds fallback (only if `credential_process` unsupported)
+
+If verification shows Claude Code's Rust SDK ignores `credential_process` /
+the container endpoint, moat writes the STS credentials directly into the
+mounted `AWS_CONFIG_FILE` as `aws_access_key_id` / `aws_secret_access_key` /
+`aws_session_token` (under `[default]` or `[profile <name>]` per 3.6) and
+refreshes the file before expiry — the path agentbox empirically proves works
+(minus its dummy-key + proxy-re-sign layer, which we are not adding). This is
+contained to the `manager.go` AWS block; the rest of the design is unchanged.
+Trade-off: short-lived real creds sit in a `0600` mounted file rather than
+being fetched on demand.
+
 ## Files to change
 
 | File | Change |
@@ -203,6 +225,8 @@ for the model picker). Documented, not enforced by moat.
 
 ## Risks / open items
 
+- **`credential_process` support in the Rust binary (highest risk).** See the
+  blocking verification note above; fallback in 3.10. Resolve before building.
 - **Stale model IDs.** Mitigated by `claude.bedrock.models` overrides and
   documenting that defaults track agentbox's current set.
 - **Host `env` trust.** moat will read the *entire* host `~/.claude/settings.json`
