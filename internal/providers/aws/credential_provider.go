@@ -110,6 +110,7 @@ func (p *CredentialProvider) Handler() http.Handler {
 		getCredentials: p.GetCredentials,
 		authToken:      p.authToken,
 		roleARN:        p.roleARN,
+		source:         p.source,
 	}
 }
 
@@ -220,6 +221,8 @@ type credentialProviderHandler struct {
 	getCredentials func(ctx context.Context) (*Credentials, error)
 	authToken      string // Required auth token (from AWS_CONTAINER_AUTHORIZATION_TOKEN)
 	roleARN        string // IAM role ARN used for error classification
+	// source is "role" or "profile" — controls error-message phrasing.
+	source string
 }
 
 // ServeHTTP implements http.Handler, returning credentials in ECS format.
@@ -237,8 +240,8 @@ func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 
 	creds, err := h.getCredentials(r.Context())
 	if err != nil {
-		slog.Error("AWS credential fetch error", "error", err, "role", h.roleARN)
-		msg := classifyAWSError(err, h.roleARN)
+		slog.Error("AWS credential fetch error", "error", err, "role", h.roleARN, "source", h.source)
+		msg := classifyAWSError(err, h.roleARN, h.source)
 		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
@@ -263,12 +266,30 @@ func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 // classifyAWSError returns an actionable, user-visible error message for common
 // AWS credential failures. It is used by credentialProviderHandler to produce
 // helpful output that the container credential helper script will display.
-func classifyAWSError(err error, roleARN string) string {
+// source should be "role" or "profile" — it controls error-message phrasing
+// for the cases that are mode-specific.
+func classifyAWSError(err error, roleARN, source string) string {
 	msg := err.Error()
 	daemonLog := filepath.Join(moatconfig.GlobalConfigDir(), "debug", "daemon.log")
 
 	switch {
 	case strings.Contains(msg, "AccessDenied"):
+		if source == "profile" {
+			return fmt.Sprintf(`AWS credential error: access denied
+
+The profile credential source rejected the request, or the resolved credentials
+lack permission for the API being called.
+Check that:
+  1. The broker tool (credential_process) successfully issues credentials
+  2. The resolved identity has the required permissions for the AWS API call
+
+Check the daemon log: %s`, daemonLog)
+		}
+		// role mode (or empty for backward compat)
+		arn := roleARN
+		if arn == "" {
+			arn = "<unknown>"
+		}
 		return fmt.Sprintf(`AWS credential error: access denied assuming role %s
 
 Your host AWS identity does not have permission to assume this role.
@@ -277,10 +298,24 @@ Check that:
   2. Your IAM user/role has sts:AssumeRole permission
 
 Run 'moat grant aws' to reconfigure, or check the daemon log:
-  %s`, roleARN, daemonLog)
+  %s`, arn, daemonLog)
 
 	case strings.Contains(msg, "no EC2 IMDS role found") ||
 		strings.Contains(msg, "failed to refresh cached credentials"):
+		if source == "profile" {
+			return `AWS credential error: profile yielded no credentials
+
+The named profile's credential_process (or default chain) failed to produce credentials.
+Verify on your host:
+  aws --profile <name> sts get-caller-identity
+If the profile uses credential_process, ensure the command is on PATH and that
+any required session is active (e.g. SSO login).`
+		}
+		// role mode (or empty for backward compat)
+		arn := roleARN
+		if arn == "" {
+			arn = "<unknown>"
+		}
 		return fmt.Sprintf(`AWS credential error: no host credentials found
 
 The moat daemon cannot find AWS credentials to assume role %s.
@@ -291,7 +326,7 @@ Ensure one of these is configured on your host:
   - ~/.aws/credentials file
   - AWS SSO session (run 'aws sso login')
 
-Run 'aws sts get-caller-identity' on your host to verify.`, roleARN)
+Run 'aws sts get-caller-identity' on your host to verify.`, arn)
 
 	case strings.Contains(msg, "ExpiredToken") || strings.Contains(msg, "ExpiredTokenException"):
 		return `AWS credential error: host credentials expired
