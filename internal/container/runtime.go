@@ -310,6 +310,7 @@ type Config struct {
 	CapAdd       []string       // Linux capabilities to add (e.g., "NET_ADMIN")
 	GroupAdd     []string       // Supplementary group IDs for the container process (e.g., "999" for docker group)
 	Privileged   bool           // If true, run container in privileged mode (required for Docker-in-Docker)
+	Init         bool           // If true, run a tini-style init as PID 1 to reap zombies and forward signals (Docker: HostConfig.Init; Apple: --init)
 	Interactive  bool           // If true, container will be attached interactively (Apple runtime: uses exec workaround; Docker: handled natively)
 	HasMoatUser  bool           // If true, image has moatuser (moat-built images); used for exec --user in Apple containers
 	MemoryMB     int            // Memory limit in megabytes (both Docker and Apple)

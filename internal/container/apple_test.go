@@ -200,6 +200,29 @@ func TestBuildCreateArgs(t *testing.T) {
 			},
 			want: []string{"create", "--memory", "4096MB", "--dns", "8.8.8.8", "--dns", "8.8.4.4", "ubuntu:22.04"},
 		},
+		{
+			// --init wraps the entrypoint with a tini-style init that reaps zombies
+			// and forwards signals. Apple's container CLI documents the flag as:
+			// "Run an init process inside the container that forwards signals and
+			// reaps processes."
+			name: "with init",
+			cfg: Config{
+				Image: "ubuntu:22.04",
+				Init:  true,
+			},
+			want: []string{"create", "--init", "--memory", "4096MB", "--dns", "8.8.8.8", "--dns", "8.8.4.4", "ubuntu:22.04"},
+		},
+		{
+			// --init is added before interactive flags so the arg order stays
+			// stable when both are enabled.
+			name: "init with interactive",
+			cfg: Config{
+				Image:       "ubuntu:22.04",
+				Init:        true,
+				Interactive: true,
+			},
+			want: []string{"create", "--init", "-i", "--memory", "4096MB", "--dns", "8.8.8.8", "--dns", "8.8.4.4", "ubuntu:22.04"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -268,6 +268,7 @@ func (r *DockerRuntime) CreateContainer(ctx context.Context, cfg Config) (string
 		},
 		&container.HostConfig{
 			Runtime:      r.ociRuntime, // "runsc" or "runc" or ""
+			Init:         &cfg.Init,    // tini as PID 1 when true; reaps zombies + forwards signals
 			Mounts:       mounts,
 			NetworkMode:  networkMode,
 			ExtraHosts:   cfg.ExtraHosts,
