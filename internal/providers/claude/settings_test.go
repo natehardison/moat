@@ -1138,6 +1138,57 @@ func indexOf(s string, b byte) int {
 	return -1
 }
 
+func TestEnvMergePrecedence(t *testing.T) {
+	host := &Settings{Env: map[string]string{"AWS_REGION": "us-west-2", "HOST_ONLY": "h"}}
+	project := &Settings{Env: map[string]string{"AWS_REGION": "eu-west-1", "PROJ": "p"}}
+	yaml := &Settings{Env: map[string]string{"AWS_REGION": "us-east-1"}}
+
+	r := MergeSettings(nil, host, SourceClaudeUser)
+	r = MergeSettings(r, project, SourceProject)
+	r = MergeSettings(r, yaml, SourceMoatYAML)
+
+	if r.Env["AWS_REGION"] != "us-east-1" {
+		t.Errorf("AWS_REGION = %q, want us-east-1 (moat.yaml wins)", r.Env["AWS_REGION"])
+	}
+	if r.Env["HOST_ONLY"] != "h" {
+		t.Errorf("host-only env dropped: %#v", r.Env)
+	}
+	if r.Env["PROJ"] != "p" {
+		t.Errorf("project env dropped: %#v", r.Env)
+	}
+}
+
+func TestEnvRoundTripJSON(t *testing.T) {
+	in := []byte(`{"env":{"FOO":"bar"},"enabledPlugins":{"p@m":true}}`)
+	var s Settings
+	if err := json.Unmarshal(in, &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Env["FOO"] != "bar" {
+		t.Fatalf("env not unmarshaled: %#v", s.Env)
+	}
+	out, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Settings
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Env["FOO"] != "bar" {
+		t.Fatalf("env not marshaled: %s", out)
+	}
+}
+
+func TestConfigToSettingsEnv(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Claude.Env = map[string]string{"X": "1"}
+	s := ConfigToSettings(cfg)
+	if s.Env["X"] != "1" {
+		t.Fatalf("claude.env not mapped: %#v", s.Env)
+	}
+}
+
 // TestMergeSettingsBaseNilDoesNotMutateOverride verifies that MergeSettings
 // does not mutate the caller's override struct when base is nil.
 func TestMergeSettingsBaseNilDoesNotMutateOverride(t *testing.T) {
