@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -32,13 +31,6 @@ func (m *mockAgentProvider) PrepareContainer(context.Context, PrepareOpts) (*Con
 	return nil, nil
 }
 func (m *mockAgentProvider) RegisterCLI(root *cobra.Command) {}
-
-// mockEndpointProvider implements both CredentialProvider and EndpointProvider.
-type mockEndpointProvider struct {
-	mockProvider
-}
-
-func (m *mockEndpointProvider) RegisterEndpoints(mux *http.ServeMux, cred *Credential) {}
 
 func TestRegistry(t *testing.T) {
 	Clear() // Start fresh
@@ -136,36 +128,6 @@ func TestGetAgent(t *testing.T) {
 	}
 }
 
-func TestGetEndpoint(t *testing.T) {
-	Clear()
-	defer Clear()
-
-	// Register a regular provider (not an endpoint)
-	Register(&mockProvider{name: "regular"})
-
-	// Register an endpoint provider
-	Register(&mockEndpointProvider{mockProvider{name: "endpoint"}})
-
-	// GetEndpoint for regular provider should return nil
-	if GetEndpoint("regular") != nil {
-		t.Error("GetEndpoint() for non-endpoint should return nil")
-	}
-
-	// GetEndpoint for endpoint provider should return the endpoint
-	ep := GetEndpoint("endpoint")
-	if ep == nil {
-		t.Fatal("GetEndpoint() for endpoint provider should not return nil")
-	}
-	if ep.Name() != "endpoint" {
-		t.Errorf("GetEndpoint() name = %q, want 'endpoint'", ep.Name())
-	}
-
-	// GetEndpoint for unknown provider should return nil
-	if GetEndpoint("unknown") != nil {
-		t.Error("GetEndpoint() for unknown should return nil")
-	}
-}
-
 func TestAll(t *testing.T) {
 	Clear()
 	defer Clear()
@@ -196,7 +158,7 @@ func TestAgents(t *testing.T) {
 	Register(&mockAgentProvider{mockProvider{name: "agent1"}})
 	Register(&mockProvider{name: "regular2"})
 	Register(&mockAgentProvider{mockProvider{name: "agent2"}})
-	Register(&mockEndpointProvider{mockProvider{name: "endpoint1"}})
+	Register(&mockProvider{name: "regular3"})
 
 	agents := Agents()
 	if len(agents) != 2 {
