@@ -29,23 +29,65 @@ Anthropic API, by reusing moat's existing AWS STS `AssumeRole` +
 | Proxy changes | N/A | **None** |
 | Blast radius | Would need gatekeeper changes | Additive: `internal/config`, `internal/providers/claude`, one gated block in `internal/run/manager.go` |
 
-> **Pre-implementation verification (blocking).** Claude Code is a Rust
-> binary. agentbox proves it reads **static keys** from `~/.aws/config` /
-> `AWS_PROFILE`, but **not** that its bundled AWS SDK for Rust honors
-> `credential_process` or `AWS_CONTAINER_CREDENTIALS_FULL_URI` — which is what
-> moat's existing AWS path relies on. The plan's first step must verify this
-> against the actual Claude Code binary (e.g. a throwaway run with a
-> `credential_process` that logs invocation). If unsupported, use the
-> **static-creds fallback** (3.10).
+Decision (confirmed): **moat-native endpoint, delivered via Claude Code's
+documented `awsCredentialExport` settings hook** (see §3.0). The AWS provider
+already does `AssumeRole`, serves creds at `/_aws/credentials`, mounts a helper
+at `/moat/aws/credentials`, and sets `AWS_REGION` / `AWS_CA_BUNDLE`
+(`manager.go:1185-1245`). The missing pieces are (a) the env vars that tell
+Claude Code to use Bedrock, (b) an `awsCredentialExport` hook + reshaping
+helper, and (c) honoring/merging the host settings `env` block.
 
-Decision (confirmed): **moat-native endpoint**. The AWS provider already does
-`AssumeRole`, serves creds at `/_aws/credentials`, mounts the
-`credential_process` helper at `/moat/aws/credentials`, and sets
-`AWS_CONFIG_FILE` / `AWS_REGION` / `AWS_CA_BUNDLE` (`manager.go:1185-1245`).
-The only missing pieces are (a) the env vars that tell Claude Code to use
-Bedrock, and (b) honoring the host settings `env` block.
+This path is **language-agnostic**: `awsCredentialExport` is an app-level
+Claude Code hook, so it does **not** depend on the Rust AWS SDK honoring
+`credential_process` or `AWS_CONTAINER_CREDENTIALS_FULL_URI`. That removes the
+biggest unknown. `credential_process` / static creds remain as fallbacks
+(§3.10) only if the hook proves unviable.
 
 ## Design
+
+### 3.0 Credential delivery: `awsCredentialExport` hook
+
+Officially documented (code.claude.com/docs/en/amazon-bedrock). Claude Code
+runs the configured command at session start and on each reload, capturing
+stdout silently, expecting:
+
+```json
+{ "Credentials": { "AccessKeyId": "...", "SecretAccessKey": "...", "SessionToken": "..." } }
+```
+
+Reload cadence is governed by `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`.
+
+moat writes `awsCredentialExport` into the container's
+`~/.claude/settings.json` pointing at a small **in-container helper** that:
+
+1. calls moat's existing AWS credential source (the `/_aws/credentials`
+   endpoint via the mounted helper — server-side `AssumeRole` + caching, no
+   change to that machinery), then
+2. reshapes the `credential_process` JSON
+   (`{"Version":1,"AccessKeyId":...,"SecretAccessKey":...,"SessionToken":...,"Expiration":...}`)
+   into the `{"Credentials":{...}}` envelope Claude Code expects.
+
+Implemented by extending the existing helper with a `--format claude` mode (or
+a sibling helper), so there is one credential source with two output shapes.
+
+`CLAUDE_CODE_API_KEY_HELPER_TTL_MS` is set to roughly half the resolved AWS
+session duration (`MetaKeySessionDuration` / `DefaultSessionDuration`), with a
+conservative floor (e.g. 300000 ms). The endpoint already returns fresh STS
+creds per call, so a short TTL is safe and only affects how often the hook
+re-runs.
+
+**Host-key handling (Bedrock mode):** the user's host
+`~/.claude/settings.json` may carry `awsCredentialExport` / `awsAuthRefresh`
+pointing at host binaries absent in the container (this is exactly why
+agentbox strips them). moat therefore, in Bedrock mode:
+
+- **overrides** `awsCredentialExport` with the moat helper (moat-managed key;
+  host value ignored), and
+- **strips** `awsAuthRefresh` (a host SSO/browser flow; moat refreshes
+  server-side, and a dangling host command would fire on credential expiry).
+
+These two keys are moat-managed in Bedrock mode and are *not* subject to the
+generic settings merge precedence (§3.4).
 
 ### 3.1 Config schema (`internal/config/config.go`)
 
@@ -179,27 +221,33 @@ The granted role must allow `bedrock:InvokeModel` /
 `bedrock:InvokeModelWithResponseStream` (and `bedrock:ListFoundationModels`
 for the model picker). Documented, not enforced by moat.
 
-### 3.10 Static-creds fallback (only if `credential_process` unsupported)
+### 3.10 Fallbacks (only if the `awsCredentialExport` hook proves unviable)
 
-If verification shows Claude Code's Rust SDK ignores `credential_process` /
-the container endpoint, moat writes the STS credentials directly into the
-mounted `AWS_CONFIG_FILE` as `aws_access_key_id` / `aws_secret_access_key` /
-`aws_session_token` (under `[default]` or `[profile <name>]` per 3.6) and
-refreshes the file before expiry — the path agentbox empirically proves works
-(minus its dummy-key + proxy-re-sign layer, which we are not adding). This is
-contained to the `manager.go` AWS block; the rest of the design is unchanged.
-Trade-off: short-lived real creds sit in a `0600` mounted file rather than
-being fetched on demand.
+The hook is officially documented and language-agnostic, so this is unlikely.
+If it fails to behave as documented against the real binary, in order:
+
+1. **`credential_process`** via the mounted `AWS_CONFIG_FILE` (moat's existing
+   AWS machinery, unchanged) — works iff the Rust SDK honors it.
+2. **Static creds file**: write STS keys directly into `AWS_CONFIG_FILE`
+   (`aws_access_key_id` / `_secret_access_key` / `_session_token`, under
+   `[default]` or `[profile <name>]` per §3.6) and refresh before expiry — the
+   path agentbox empirically proves works (minus its dummy-key + proxy-re-sign
+   layer, which we are not adding). Trade-off: short-lived real creds sit in a
+   `0600` mounted file rather than being fetched on demand.
+
+All fallbacks are contained to the `manager.go` AWS block; the rest of the
+design is unchanged.
 
 ## Files to change
 
 | File | Change |
 |---|---|
 | `internal/config/config.go` | `ClaudeConfig.Env`, `ClaudeConfig.Bedrock`, `BedrockConfig`, `BedrockModels`, `defaultBedrockModels()`, validation hooks |
-| `internal/providers/claude/settings.go` | `Settings.Env` first-class, merge with precedence + source tracking |
-| `internal/providers/claude/agent.go` | write merged `env` into container `settings.json`; suppress `ANTHROPIC_*` when Bedrock |
+| `internal/providers/claude/settings.go` | `Settings.Env` first-class, merge with precedence + source tracking; in Bedrock mode set moat-managed `awsCredentialExport` and drop host `awsAuthRefresh` (§3.0) |
+| `internal/providers/claude/agent.go` | write merged `env` + `awsCredentialExport` into container `settings.json`; emit `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`; suppress `ANTHROPIC_*` when Bedrock |
 | `internal/providers/claude/bedrock.go` (new) | `BedrockEnv`, default model IDs |
 | `internal/providers/claude/cli.go` | add Bedrock `NetworkHosts` under strict policy |
+| `internal/providers/aws/` (helper) | extend the credential helper (`GetCredentialHelper`) with a `--format claude` mode emitting the `{"Credentials":{...}}` envelope (§3.0) |
 | `internal/run/manager.go` | region resolver; `AWS_PROFILE`→`[profile]` config; append `BedrockEnv` to `proxyEnv` in the AWS block (`~1185-1245`) gated on `cfg.Claude.Bedrock.Enabled && r.AWSCredentialProvider != nil` |
 | `internal/providers/aws/grant.go` | (read-only) reuse `ConfigFromCredential` region |
 
@@ -207,8 +255,11 @@ being fetched on demand.
 
 - **Unit:** config parse + validation (missing aws grant, base_url/llm-gateway
   conflict); `Settings.Env` merge precedence incl. host-source survival;
+  Bedrock-mode settings handling (moat-managed `awsCredentialExport` overrides
+  host value; `awsAuthRefresh` stripped); credential helper `--format claude`
+  envelope reshaping (incl. session token / error passthrough);
   `BedrockEnv` defaults vs. overrides; `AWS_PROFILE`→config rendering;
-  region resolver precedence.
+  region resolver precedence; `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` derivation.
 - **Manager:** dry-run env assertion that Bedrock vars + resolved
   `AWS_REGION` + profile-aware AWS config appear, and that `ANTHROPIC_API_KEY`
   is absent when Bedrock + anthropic grant coexist.
@@ -225,8 +276,12 @@ being fetched on demand.
 
 ## Risks / open items
 
-- **`credential_process` support in the Rust binary (highest risk).** See the
-  blocking verification note above; fallback in 3.10. Resolve before building.
+- **`awsCredentialExport` behavior vs. docs.** Documented and language-agnostic,
+  so low risk, but the exact reshaped JSON and TTL behavior should be smoke-
+  tested against the real binary early; fallbacks in §3.10.
+- **`awsAuthRefresh` interaction.** If not stripped in Bedrock mode, a host SSO
+  command would fire inside the container on credential expiry. Handled in §3.0;
+  covered by a unit test.
 - **Stale model IDs.** Mitigated by `claude.bedrock.models` overrides and
   documenting that defaults track agentbox's current set.
 - **Host `env` trust.** moat will read the *entire* host `~/.claude/settings.json`
