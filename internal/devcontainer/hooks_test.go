@@ -1,6 +1,13 @@
 package devcontainer
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestParseLifecycleCommand_String(t *testing.T) {
 	got := parseLifecycleCommand("echo hi")
@@ -35,5 +42,35 @@ func TestParseLifecycleCommand_NilOrUnknown(t *testing.T) {
 	}
 	if got := parseLifecycleCommand(42); got != "" {
 		t.Errorf("int: got %q, want empty", got)
+	}
+}
+
+func TestRunInitializeCommand_SuccessAndCwd(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	cmd := fmt.Sprintf("pwd > %q", marker)
+	if err := RunInitializeCommand(context.Background(), cmd, dir); err != nil {
+		t.Fatalf("RunInitializeCommand: %v", err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("marker: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	if got != dir {
+		t.Errorf("pwd = %q, want %q", got, dir)
+	}
+}
+
+func TestRunInitializeCommand_NonZeroExitIsHardFail(t *testing.T) {
+	err := RunInitializeCommand(context.Background(), "false", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error from `false` command")
+	}
+}
+
+func TestRunInitializeCommand_EmptyIsNoop(t *testing.T) {
+	if err := RunInitializeCommand(context.Background(), "", t.TempDir()); err != nil {
+		t.Errorf("empty command: got err %v, want nil", err)
 	}
 }
