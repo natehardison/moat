@@ -50,6 +50,8 @@ func TestStripJSONC(t *testing.T) {
 		{"escaped-quote-in-string", `{"a": "x\"// still string"}`, `{"a": "x\"// still string"}`},
 		{"trailing-comma-object", `{"a":1,}`, `{"a":1}`},
 		{"trailing-comma-array", `{"a":[1,2,]}`, `{"a":[1,2]}`},
+		{"unterminated-block", `{"a": /* unclosed`, `{"a": `},
+		{"block-comment-at-end", `{"a": /* trailing */}`, `{"a": }`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

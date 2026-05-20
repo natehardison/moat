@@ -104,6 +104,8 @@ func stripJSONC(in []byte) []byte {
 				}
 				if i+1 < len(in) {
 					i += 2
+				} else {
+					i = len(in) // unterminated comment runs to EOF
 				}
 				continue
 			}
