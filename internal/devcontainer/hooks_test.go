@@ -1,12 +1,16 @@
 package devcontainer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/majorcontext/moat/internal/container"
 )
 
 func TestParseLifecycleCommand_String(t *testing.T) {
@@ -72,5 +76,68 @@ func TestRunInitializeCommand_NonZeroExitIsHardFail(t *testing.T) {
 func TestRunInitializeCommand_EmptyIsNoop(t *testing.T) {
 	if err := RunInitializeCommand(context.Background(), "", t.TempDir()); err != nil {
 		t.Errorf("empty command: got err %v, want nil", err)
+	}
+}
+
+type fakeExecRuntime struct {
+	calls []fakeExec
+	fail  bool
+}
+
+type fakeExec struct {
+	id       string
+	cmd      []string
+	stdinLen int
+}
+
+func (f *fakeExecRuntime) Exec(ctx context.Context, id string, cmd []string, stdin []byte, stdout, stderr io.Writer) error {
+	f.calls = append(f.calls, fakeExec{id, cmd, len(stdin)})
+	if f.fail {
+		return &container.ExecError{ExitCode: 7}
+	}
+	fmt.Fprintln(stdout, "ok")
+	return nil
+}
+
+func TestRunHook_PassesUserHomeAndCwd(t *testing.T) {
+	fr := &fakeExecRuntime{}
+	out := &bytes.Buffer{}
+	err := RunHook(context.Background(), fr, "ctr-1", "onCreate", "echo hi",
+		HookOpts{
+			User:    "vscode",
+			Home:    "/home/vscode",
+			Workdir: "/workspaces/repo",
+			Env:     map[string]string{"PATH": "/usr/local/bin:/usr/bin"},
+		}, out, out)
+	if err != nil {
+		t.Fatalf("RunHook: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("got %d calls, want 1", len(fr.calls))
+	}
+	cmd := fr.calls[0].cmd
+	joined := strings.Join(cmd, " ")
+	for _, want := range []string{"sh", "-c", "cd /workspaces/repo && echo hi"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("cmd missing %q: %v", want, cmd)
+		}
+	}
+}
+
+func TestRunHook_NonZeroIsErrorForRequiredHook(t *testing.T) {
+	fr := &fakeExecRuntime{fail: true}
+	err := RunHook(context.Background(), fr, "ctr-1", "onCreate", "false", HookOpts{}, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for failing required hook")
+	}
+}
+
+func TestRunHook_EmptyCommandIsNoop(t *testing.T) {
+	fr := &fakeExecRuntime{}
+	if err := RunHook(context.Background(), fr, "ctr-1", "onCreate", "", HookOpts{}, io.Discard, io.Discard); err != nil {
+		t.Errorf("empty: got %v", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("empty hook should not call Exec")
 	}
 }
