@@ -1,0 +1,8 @@
+{
+  "image": "ubuntu:24.04",
+  "mounts": [
+    "source=${localWorkspaceFolder}/cache,target=/cache,type=bind",
+    { "source": "named-vol", "target": "/data", "type": "volume" },
+    "source=/tmp/ro,target=/ro,type=bind,readonly"
+  ]
+}

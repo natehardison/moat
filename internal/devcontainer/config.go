@@ -245,7 +245,57 @@ func parse(path, workspace string, raw []byte) (*Config, error) {
 		}
 	}
 
+	if rawMounts, ok := top["mounts"].([]any); ok {
+		for _, raw := range rawMounts {
+			m, err := parseMount(raw, ctx)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			cfg.Mounts = append(cfg.Mounts, m)
+		}
+	}
+
 	return cfg, nil
+}
+
+func parseMount(raw any, ctx expandContext) (Mount, error) {
+	var fields map[string]string
+	switch v := raw.(type) {
+	case string:
+		fields = map[string]string{}
+		for _, part := range strings.Split(v, ",") {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 {
+				fields[kv[0]] = kv[1]
+			} else if kv[0] == "readonly" || kv[0] == "ro" {
+				fields["readonly"] = "true"
+			}
+		}
+	case map[string]any:
+		fields = map[string]string{}
+		for k, val := range v {
+			fields[k] = fmt.Sprint(val)
+		}
+	default:
+		return Mount{}, fmt.Errorf("unrecognized mount: %v", raw)
+	}
+	typ := fields["type"]
+	if typ == "" {
+		typ = "bind"
+	}
+	if typ != "bind" && typ != "volume" {
+		return Mount{}, fmt.Errorf("unsupported mount type %q (only bind and volume)", typ)
+	}
+	ro := false
+	if v, ok := fields["readonly"]; ok && (v == "true" || v == "1") {
+		ro = true
+	}
+	return Mount{
+		Source:   expandVars(fields["source"], ctx),
+		Target:   expandVars(fields["target"], ctx),
+		Type:     typ,
+		ReadOnly: ro,
+	}, nil
 }
 
 func parseBuild(raw map[string]any) *BuildConfig {

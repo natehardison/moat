@@ -181,6 +181,43 @@ func TestParse_EnvAndWorkspaceFolder(t *testing.T) {
 	}
 }
 
+func TestParse_Mounts(t *testing.T) {
+	dir := setupWorkspace(t, "mounts.json")
+	cfg, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if len(cfg.Mounts) != 3 {
+		t.Fatalf("len(Mounts) = %d, want 3", len(cfg.Mounts))
+	}
+	m0 := cfg.Mounts[0]
+	if m0.Source != filepath.Join(dir, "cache") || m0.Target != "/cache" || m0.Type != "bind" || m0.ReadOnly {
+		t.Errorf("Mount[0] = %+v", m0)
+	}
+	m1 := cfg.Mounts[1]
+	if m1.Source != "named-vol" || m1.Target != "/data" || m1.Type != "volume" {
+		t.Errorf("Mount[1] = %+v", m1)
+	}
+	m2 := cfg.Mounts[2]
+	if !m2.ReadOnly {
+		t.Errorf("Mount[2].ReadOnly = false, want true")
+	}
+}
+
+func TestParse_BadMountType(t *testing.T) {
+	dir := t.TempDir()
+	dcDir := filepath.Join(dir, ".devcontainer")
+	os.MkdirAll(dcDir, 0o755)
+	os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(`{
+      "image": "ubuntu:24.04",
+      "mounts": ["source=x,target=y,type=tmpfs"]
+    }`), 0o644)
+	_, err := Detect(dir)
+	if err == nil {
+		t.Fatal("Detect should fail on unsupported mount type")
+	}
+}
+
 // setupWorkspace creates a temp dir containing .devcontainer/devcontainer.json
 // copied from testdata/<fixture>.
 func setupWorkspace(t *testing.T, fixture string) string {
