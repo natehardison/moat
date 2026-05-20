@@ -1,10 +1,40 @@
 package devcontainer
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/majorcontext/moat/internal/container"
 )
+
+// fakeBuildManager implements container.BuildManager for testing.
+type fakeBuildManager struct {
+	builds []fakeBuild
+	exists map[string]bool
+}
+
+type fakeBuild struct {
+	dockerfile string
+	tag        string
+}
+
+func (f *fakeBuildManager) BuildImage(ctx context.Context, df, tag string, opts container.BuildOptions) error {
+	f.builds = append(f.builds, fakeBuild{df, tag})
+	if f.exists == nil {
+		f.exists = map[string]bool{}
+	}
+	f.exists[tag] = true
+	return nil
+}
+
+func (f *fakeBuildManager) ImageExists(ctx context.Context, tag string) (bool, error) {
+	return f.exists[tag], nil
+}
+
+func (f *fakeBuildManager) GetImageHomeDir(ctx context.Context, image string) string { return "/root" }
 
 func TestContentHash_Stable(t *testing.T) {
 	src := filepath.Join("testdata", "hash-fixture")
@@ -64,5 +94,44 @@ func copyTree(t *testing.T, src, dst string) {
 		return os.WriteFile(target, data, 0o644)
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBuildBase_ImagePulledViaFROM(t *testing.T) {
+	dir := setupWorkspace(t, "minimal-image.json")
+	cfg, _ := Detect(dir)
+	bm := &fakeBuildManager{}
+	tag, err := BuildBase(context.Background(), bm, dir, cfg, BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	if !strings.HasPrefix(tag, "moat-devcontainer-") || !strings.Contains(tag, ":base-") {
+		t.Errorf("tag = %q", tag)
+	}
+	if len(bm.builds) != 1 {
+		t.Fatalf("got %d builds, want 1", len(bm.builds))
+	}
+	if !strings.Contains(bm.builds[0].dockerfile, "FROM ubuntu:24.04") {
+		t.Errorf("dockerfile = %q", bm.builds[0].dockerfile)
+	}
+}
+
+func TestBuildBase_CachedSkipsBuild(t *testing.T) {
+	dir := setupWorkspace(t, "minimal-image.json")
+	cfg, _ := Detect(dir)
+	bm := &fakeBuildManager{exists: map[string]bool{}}
+	tag1, _ := BuildBase(context.Background(), bm, dir, cfg, BuildOptions{})
+	// Mark cached
+	bm.exists[tag1] = true
+	bm.builds = nil
+	tag2, err := BuildBase(context.Background(), bm, dir, cfg, BuildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag1 != tag2 {
+		t.Errorf("tags differ: %s vs %s", tag1, tag2)
+	}
+	if len(bm.builds) != 0 {
+		t.Errorf("cached path should skip BuildImage, got %d builds", len(bm.builds))
 	}
 }
