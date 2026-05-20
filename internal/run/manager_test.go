@@ -1446,6 +1446,21 @@ func TestReplaceHostInEnv_KeyNotReplaced(t *testing.T) {
 	}
 }
 
+func TestResolveBaseImage_NoConfig(t *testing.T) {
+	got := resolveBaseImage(nil)
+	if got != "" {
+		t.Errorf("resolveBaseImage(nil) = %q, want \"\"", got)
+	}
+}
+
+func TestResolveBaseImage_FromConfig(t *testing.T) {
+	cfg := &config.Config{BaseImage: "ubuntu:24.04"}
+	got := resolveBaseImage(cfg)
+	if got != "ubuntu:24.04" {
+		t.Errorf("resolveBaseImage = %q, want ubuntu:24.04", got)
+	}
+}
+
 // TestResolveMountExcludesToTmpfs verifies that mount excludes are correctly
 // resolved to tmpfs mounts with absolute container paths.
 func TestResolveMountExcludesToTmpfs(t *testing.T) {

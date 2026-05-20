@@ -541,6 +541,15 @@ func (m *Manager) registerPersistedRun(runState State, stateConfirmed bool, skip
 	}
 }
 
+// resolveBaseImage returns the explicit base image from moat.yaml, or "".
+// Empty means "let downstream code decide" (auto-select or devcontainer-supplied).
+func resolveBaseImage(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.BaseImage
+}
+
 // Create initializes a new run without starting it.
 func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 	// Resolve agent name
@@ -1739,12 +1748,8 @@ region = %s
 	// builder, which can fail to parse BuildKit syntax (e.g., --mount=type=cache
 	// confuses legacy parser line counting, causing "unknown instruction" errors).
 	useBuildKit := os.Getenv("BUILDKIT_HOST") != "" && os.Getenv("MOAT_DISABLE_BUILDKIT") != "1"
-	var baseImage string
-	if opts.Config != nil {
-		baseImage = opts.Config.BaseImage
-	}
 	imageSpec := &deps.ImageSpec{
-		BaseImage:          baseImage,
+		BaseImage:          resolveBaseImage(opts.Config),
 		NeedsSSH:           hasSSHGrants,
 		SSHHosts:           sshGrants,
 		InitProviders:      imgNeeds.initProviders,
