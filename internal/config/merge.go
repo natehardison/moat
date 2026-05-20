@@ -1,5 +1,10 @@
 package config
 
+import (
+	"github.com/majorcontext/moat/internal/keep"
+	"github.com/majorcontext/moat/internal/netrules"
+)
+
 // MergeConfig returns the resolved Config produced by merging defaults under
 // project: project values win per field when set; defaults fill in missing
 // (zero-value) fields; maps merge per-key with project winning per key;
@@ -29,7 +34,7 @@ func MergeConfig(defaults, project *Config) *Config {
 	mergeScalars(defaults, project, out)
 	mergeMaps(defaults, project, out)
 	mergeSlices(defaults, project, out)
-	// Nested-struct fields are filled by Tasks 4-5.
+	mergeNested(defaults, project, out)
 	return out
 }
 
@@ -71,7 +76,380 @@ func cloneConfig(c *Config) *Config {
 	mergeScalars(empty, c, out)
 	mergeMaps(empty, c, out)
 	mergeSlices(empty, c, out)
-	// Nested-struct fields filled in Tasks 4-5.
+	mergeNested(empty, c, out)
+	return out
+}
+
+// mergeNested handles all nested-struct fields on Config. Each sub-struct
+// gets its own merge function that applies the standard rules recursively.
+func mergeNested(d, p, out *Config) {
+	out.Claude = mergeClaudeConfig(d.Claude, p.Claude)
+	out.Codex = mergeCodexConfig(d.Codex, p.Codex)
+	out.Gemini = mergeGeminiConfig(d.Gemini, p.Gemini)
+	out.Container = mergeContainerConfig(d.Container, p.Container)
+	out.Network = mergeNetworkConfig(d.Network, p.Network)
+	out.Snapshots = mergeSnapshotConfig(d.Snapshots, p.Snapshots)
+	out.Tracing = mergeTracingConfig(d.Tracing, p.Tracing)
+	out.Hooks = mergeHooksConfig(d.Hooks, p.Hooks)
+	out.Clipboard = mergeBoolPtr(p.Clipboard, d.Clipboard)
+}
+
+// mergeClaudeConfig merges two ClaudeConfig values.
+//
+// Fields merged:
+//   - BaseURL string — pickStr (project wins if non-empty)
+//   - SyncLogs *bool — mergeBoolPtr (project wins if non-nil)
+//   - Plugins map[string]bool — per-key merge; project wins per key
+//   - Marketplaces map[string]MarketplaceSpec — per-key; project wins per key
+//   - MCP map[string]MCPServerSpec — per-key; project wins per key
+//   - LLMGateway *LLMGatewayConfig — opaque pointer; project wins if non-nil; both non-nil: recurse
+//   - SkipPermissionsPrompt bool — yaml:"-"; OR semantics (true survives)
+func mergeClaudeConfig(d, p ClaudeConfig) ClaudeConfig {
+	return ClaudeConfig{
+		BaseURL:               pickStr(p.BaseURL, d.BaseURL),
+		SyncLogs:              mergeBoolPtr(p.SyncLogs, d.SyncLogs),
+		Plugins:               mergeBoolMap(d.Plugins, p.Plugins),
+		Marketplaces:          mergeMarketplaceMap(d.Marketplaces, p.Marketplaces),
+		MCP:                   mergeMCPSpecMap(d.MCP, p.MCP),
+		LLMGateway:            mergeLLMGatewayPtr(p.LLMGateway, d.LLMGateway),
+		SkipPermissionsPrompt: p.SkipPermissionsPrompt || d.SkipPermissionsPrompt,
+	}
+}
+
+// mergeCodexConfig merges two CodexConfig values.
+//
+// Fields merged:
+//   - SyncLogs *bool — mergeBoolPtr
+//   - MCP map[string]MCPServerSpec — per-key merge
+func mergeCodexConfig(d, p CodexConfig) CodexConfig {
+	return CodexConfig{
+		SyncLogs: mergeBoolPtr(p.SyncLogs, d.SyncLogs),
+		MCP:      mergeMCPSpecMap(d.MCP, p.MCP),
+	}
+}
+
+// mergeGeminiConfig merges two GeminiConfig values.
+//
+// Fields merged:
+//   - SyncLogs *bool — mergeBoolPtr
+//   - MCP map[string]MCPServerSpec — per-key merge
+func mergeGeminiConfig(d, p GeminiConfig) GeminiConfig {
+	return GeminiConfig{
+		SyncLogs: mergeBoolPtr(p.SyncLogs, d.SyncLogs),
+		MCP:      mergeMCPSpecMap(d.MCP, p.MCP),
+	}
+}
+
+// mergeContainerConfig merges two ContainerConfig values.
+//
+// Fields merged:
+//   - Memory int — pickInt (project wins if non-zero)
+//   - CPUs int — pickInt (project wins if non-zero)
+//   - DNS []string — pickStrSlice (project replaces defaults; DNS order matters)
+//   - Ulimits map[string]UlimitSpec — per-key; project wins per key
+func mergeContainerConfig(d, p ContainerConfig) ContainerConfig {
+	return ContainerConfig{
+		Memory:  pickInt(p.Memory, d.Memory),
+		CPUs:    pickInt(p.CPUs, d.CPUs),
+		DNS:     pickStrSlice(p.DNS, d.DNS),
+		Ulimits: mergeUlimitMap(d.Ulimits, p.Ulimits),
+	}
+}
+
+// mergeNetworkConfig merges two NetworkConfig values.
+//
+// Fields merged:
+//   - Policy string — pickStr (project wins if non-empty)
+//   - Allow []string — deprecated; always left empty (hard error at parse time)
+//   - Rules []NetworkRuleEntry — keyed by Host; project wins per host
+//   - KeepPolicy *keep.PolicyConfig — opaque pointer; project wins if non-nil
+//   - Host []int — pickIntSlice (project replaces defaults; order matters)
+func mergeNetworkConfig(d, p NetworkConfig) NetworkConfig {
+	return NetworkConfig{
+		Policy:     pickStr(p.Policy, d.Policy),
+		Rules:      mergeNetworkRules(d.Rules, p.Rules),
+		KeepPolicy: mergePolicyConfigPtr(p.KeepPolicy, d.KeepPolicy),
+		Host:       pickIntSlice(p.Host, d.Host),
+	}
+}
+
+// mergeSnapshotConfig merges two SnapshotConfig values.
+//
+// Fields merged:
+//   - Disabled bool — OR semantics (true survives from either side)
+//   - Triggers SnapshotTriggerConfig — recurse
+//   - Exclude SnapshotExcludeConfig — recurse
+//   - Retention SnapshotRetentionConfig — recurse
+func mergeSnapshotConfig(d, p SnapshotConfig) SnapshotConfig {
+	return SnapshotConfig{
+		Disabled:  p.Disabled || d.Disabled,
+		Triggers:  mergeSnapshotTriggerConfig(d.Triggers, p.Triggers),
+		Exclude:   mergeSnapshotExcludeConfig(d.Exclude, p.Exclude),
+		Retention: mergeSnapshotRetentionConfig(d.Retention, p.Retention),
+	}
+}
+
+// mergeSnapshotTriggerConfig merges two SnapshotTriggerConfig values.
+//
+// Fields merged (all bool with OR semantics, int with pickInt):
+//   - DisablePreRun, DisableGitCommits, DisableBuilds, DisableIdle — OR
+//   - IdleThresholdSeconds int — pickInt
+func mergeSnapshotTriggerConfig(d, p SnapshotTriggerConfig) SnapshotTriggerConfig {
+	return SnapshotTriggerConfig{
+		DisablePreRun:        p.DisablePreRun || d.DisablePreRun,
+		DisableGitCommits:    p.DisableGitCommits || d.DisableGitCommits,
+		DisableBuilds:        p.DisableBuilds || d.DisableBuilds,
+		DisableIdle:          p.DisableIdle || d.DisableIdle,
+		IdleThresholdSeconds: pickInt(p.IdleThresholdSeconds, d.IdleThresholdSeconds),
+	}
+}
+
+// mergeSnapshotExcludeConfig merges two SnapshotExcludeConfig values.
+//
+// Fields merged:
+//   - IgnoreGitignore bool — OR semantics
+//   - Additional []string — pickStrSlice (project replaces defaults)
+func mergeSnapshotExcludeConfig(d, p SnapshotExcludeConfig) SnapshotExcludeConfig {
+	return SnapshotExcludeConfig{
+		IgnoreGitignore: p.IgnoreGitignore || d.IgnoreGitignore,
+		Additional:      pickStrSlice(p.Additional, d.Additional),
+	}
+}
+
+// mergeSnapshotRetentionConfig merges two SnapshotRetentionConfig values.
+//
+// Fields merged:
+//   - MaxCount int — pickInt (project wins if non-zero)
+//   - DeleteInitial bool — OR semantics
+func mergeSnapshotRetentionConfig(d, p SnapshotRetentionConfig) SnapshotRetentionConfig {
+	return SnapshotRetentionConfig{
+		MaxCount:      pickInt(p.MaxCount, d.MaxCount),
+		DeleteInitial: p.DeleteInitial || d.DeleteInitial,
+	}
+}
+
+// mergeTracingConfig merges two TracingConfig values.
+//
+// Fields merged:
+//   - DisableExec bool — OR semantics (true survives)
+func mergeTracingConfig(d, p TracingConfig) TracingConfig {
+	return TracingConfig{
+		DisableExec: p.DisableExec || d.DisableExec,
+	}
+}
+
+// mergeHooksConfig merges two HooksConfig values.
+//
+// Fields merged (all string with pickStr — project wins if non-empty):
+//   - PostBuild string
+//   - PostBuildRoot string
+//   - PreRun string
+func mergeHooksConfig(d, p HooksConfig) HooksConfig {
+	return HooksConfig{
+		PostBuild:     pickStr(p.PostBuild, d.PostBuild),
+		PostBuildRoot: pickStr(p.PostBuildRoot, d.PostBuildRoot),
+		PreRun:        pickStr(p.PreRun, d.PreRun),
+	}
+}
+
+// mergeBoolPtr returns a fresh copy of primary if non-nil, else a fresh copy
+// of fallback. Returns nil if both are nil.
+func mergeBoolPtr(primary, fallback *bool) *bool {
+	if primary != nil {
+		b := *primary
+		return &b
+	}
+	if fallback == nil {
+		return nil
+	}
+	b := *fallback
+	return &b
+}
+
+// pickInt returns primary if non-zero, otherwise fallback.
+func pickInt(primary, fallback int) int {
+	if primary != 0 {
+		return primary
+	}
+	return fallback
+}
+
+// pickIntSlice returns primary if non-empty, else fallback (no merge).
+// Returns nil iff both inputs are nil-or-empty.
+func pickIntSlice(primary, fallback []int) []int {
+	if len(primary) > 0 {
+		out := make([]int, len(primary))
+		copy(out, primary)
+		return out
+	}
+	if len(fallback) == 0 {
+		return nil
+	}
+	out := make([]int, len(fallback))
+	copy(out, fallback)
+	return out
+}
+
+// mergeBoolMap merges two map[string]bool maps per-key; override wins per key.
+// Returns nil iff both inputs are nil-or-empty.
+func mergeBoolMap(base, override map[string]bool) map[string]bool {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
+// mergeMarketplaceMap merges two map[string]MarketplaceSpec maps per-key;
+// override wins per key. MarketplaceSpec has only string fields — value copy is safe.
+// Returns nil iff both inputs are nil-or-empty.
+func mergeMarketplaceMap(base, override map[string]MarketplaceSpec) map[string]MarketplaceSpec {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]MarketplaceSpec, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneMCPServerSpec returns a deep copy of s. MCPServerSpec has reference-type
+// fields (Args []string, Env map[string]string) that must be copied to avoid aliasing.
+func cloneMCPServerSpec(s MCPServerSpec) MCPServerSpec {
+	out := s // copies Command, Grant, Cwd (strings)
+	if s.Args != nil {
+		out.Args = append([]string(nil), s.Args...)
+	}
+	if s.Env != nil {
+		out.Env = make(map[string]string, len(s.Env))
+		for k, v := range s.Env {
+			out.Env[k] = v
+		}
+	}
+	return out
+}
+
+// mergeMCPSpecMap merges two map[string]MCPServerSpec maps per-key;
+// override wins per key. Each MCPServerSpec is deep-copied.
+// Returns nil iff both inputs are nil-or-empty.
+func mergeMCPSpecMap(base, override map[string]MCPServerSpec) map[string]MCPServerSpec {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]MCPServerSpec, len(base)+len(override))
+	for k, v := range base {
+		out[k] = cloneMCPServerSpec(v)
+	}
+	for k, v := range override {
+		out[k] = cloneMCPServerSpec(v)
+	}
+	return out
+}
+
+// clonePolicyConfig returns a deep copy of p. keep.PolicyConfig has a Deny
+// []string field that must be copied to avoid aliasing. Returns nil if p is nil.
+func clonePolicyConfig(p *keep.PolicyConfig) *keep.PolicyConfig {
+	if p == nil {
+		return nil
+	}
+	c := *p // copies Pack, File, Mode (strings)
+	if p.Deny != nil {
+		c.Deny = append([]string(nil), p.Deny...)
+	}
+	return &c
+}
+
+// mergeLLMGatewayPtr merges two *LLMGatewayConfig pointers. Primary wins if
+// non-nil; if both are non-nil, the pointed-to values are recursively merged.
+// Returns nil if both are nil.
+func mergeLLMGatewayPtr(primary, fallback *LLMGatewayConfig) *LLMGatewayConfig {
+	if primary == nil && fallback == nil {
+		return nil
+	}
+	if primary == nil {
+		return &LLMGatewayConfig{Policy: clonePolicyConfig(fallback.Policy)}
+	}
+	if fallback == nil {
+		return &LLMGatewayConfig{Policy: clonePolicyConfig(primary.Policy)}
+	}
+	// Both non-nil: project's Policy wins if set; fallback otherwise.
+	return &LLMGatewayConfig{
+		Policy: mergePolicyConfigPtr(primary.Policy, fallback.Policy),
+	}
+}
+
+// mergePolicyConfigPtr merges two *keep.PolicyConfig pointers.
+// Primary wins if non-nil; otherwise fallback is cloned. Returns nil if both nil.
+func mergePolicyConfigPtr(primary, fallback *keep.PolicyConfig) *keep.PolicyConfig {
+	if primary != nil {
+		return clonePolicyConfig(primary)
+	}
+	return clonePolicyConfig(fallback)
+}
+
+// mergeUlimitMap merges two map[string]UlimitSpec maps per-key;
+// override wins per key. UlimitSpec has only int64 fields — value copy is safe.
+// Returns nil iff both inputs are nil-or-empty.
+func mergeUlimitMap(base, override map[string]UlimitSpec) map[string]UlimitSpec {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]UlimitSpec, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
+// mergeNetworkRules merges two []netrules.NetworkRuleEntry slices keyed by
+// Host. Override entries replace base entries on Host collision. Order is
+// preserved: base entries first, then override-only entries appended.
+// Returns nil iff both inputs are nil-or-empty.
+//
+// NetworkRuleEntry embeds HostRules{Host string, Rules []Rule}. Each entry is
+// shallow-copied by value; Rules []Rule is a slice of Rule structs (all scalar
+// string fields), so value-copy is safe (no pointer or map fields).
+func mergeNetworkRules(base, override []netrules.NetworkRuleEntry) []netrules.NetworkRuleEntry {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	seen := make(map[string]int, len(base)+len(override))
+	out := make([]netrules.NetworkRuleEntry, 0, len(base)+len(override))
+	for _, r := range base {
+		seen[r.Host] = len(out)
+		out = append(out, cloneNetworkRuleEntry(r))
+	}
+	for _, r := range override {
+		if idx, ok := seen[r.Host]; ok {
+			out[idx] = cloneNetworkRuleEntry(r)
+			continue
+		}
+		seen[r.Host] = len(out)
+		out = append(out, cloneNetworkRuleEntry(r))
+	}
+	return out
+}
+
+// cloneNetworkRuleEntry returns a deep copy of e. HostRules.Rules is a
+// []Rule slice (Rule has only string fields); it is copied to avoid aliasing.
+func cloneNetworkRuleEntry(e netrules.NetworkRuleEntry) netrules.NetworkRuleEntry {
+	out := e // copies Host (string)
+	if e.Rules != nil {
+		out.Rules = append([]netrules.Rule(nil), e.Rules...)
+	}
 	return out
 }
 
