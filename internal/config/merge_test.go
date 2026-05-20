@@ -561,6 +561,127 @@ func TestMergeConfig_Clipboard(t *testing.T) {
 	})
 }
 
+// TestMergeConfigCoversAllFields verifies that every exported field of
+// Config has merge support. If this test fails, MergeConfig is missing a
+// new field on the struct — extend mergeScalars/mergeMaps/mergeSlices/
+// mergeNested to cover it.
+//
+// Strategy: set one field at a time on the `defaults` Config to a non-zero
+// example; merge with a zero `project`; assert the merged result has the
+// non-zero value. If a field is silently dropped, the test fails with the
+// offending field name.
+func TestMergeConfigCoversAllFields(t *testing.T) {
+	cfgType := reflect.TypeOf(Config{})
+	for i := 0; i < cfgType.NumField(); i++ {
+		f := cfgType.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if f.Tag.Get("yaml") == "-" {
+			continue // explicitly excluded from YAML
+		}
+		t.Run(f.Name, func(t *testing.T) {
+			defaults := &Config{}
+			dv := reflect.ValueOf(defaults).Elem()
+			fieldVal := dv.FieldByName(f.Name)
+			nonZero := nonZeroValueFor(f.Type)
+			if !nonZero.IsValid() {
+				t.Skipf("no non-zero example for field %s (type %s); extend nonZeroValueFor", f.Name, f.Type)
+			}
+			fieldVal.Set(nonZero)
+
+			merged := MergeConfig(defaults, &Config{})
+			mv := reflect.ValueOf(merged).Elem().FieldByName(f.Name)
+
+			if mv.IsZero() {
+				t.Errorf("field %s was set in defaults but dropped by MergeConfig (got zero value); extend MergeConfig", f.Name)
+			}
+		})
+	}
+}
+
+// nonZeroValueFor returns a non-zero reflect.Value for the given type, used
+// only by TestMergeConfigCoversAllFields. Returns an invalid Value when the
+// type isn't supported here — that subtest is skipped.
+func nonZeroValueFor(t reflect.Type) reflect.Value {
+	switch t.Kind() {
+	case reflect.String:
+		return reflect.ValueOf("x").Convert(t)
+	case reflect.Bool:
+		return reflect.ValueOf(true).Convert(t)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return reflect.ValueOf(int64(1)).Convert(t)
+	case reflect.Slice:
+		elem := nonZeroValueFor(t.Elem())
+		if !elem.IsValid() {
+			return reflect.Value{}
+		}
+		s := reflect.MakeSlice(t, 1, 1)
+		s.Index(0).Set(elem)
+		return s
+	case reflect.Map:
+		k := nonZeroValueFor(t.Key())
+		v := nonZeroValueFor(t.Elem())
+		if !k.IsValid() || !v.IsValid() {
+			return reflect.Value{}
+		}
+		m := reflect.MakeMap(t)
+		m.SetMapIndex(k, v)
+		return m
+	case reflect.Ptr:
+		return reflect.New(t.Elem())
+	case reflect.Struct:
+		v := reflect.New(t).Elem()
+		set := false
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			if !f.IsExported() {
+				continue
+			}
+			fv := nonZeroValueFor(f.Type)
+			if !fv.IsValid() {
+				continue
+			}
+			v.FieldByIndex(f.Index).Set(fv)
+			set = true
+			break
+		}
+		if !set {
+			return reflect.Value{}
+		}
+		return v
+	default:
+		return reflect.Value{}
+	}
+}
+
+func TestConfigSources(t *testing.T) {
+	defaults := &Config{
+		Agent:  "claude",
+		Grants: []string{"aws"},
+		Claude: ClaudeConfig{BaseURL: "https://default.example"},
+	}
+	project := &Config{
+		Grants: []string{"github"},
+		Claude: ClaudeConfig{BaseURL: "https://project.example"},
+	}
+	merged := MergeConfig(defaults, project)
+	sources := Sources(defaults, project, merged)
+
+	if got := sources["agent"]; got != SourceDefaults {
+		t.Errorf("agent source = %v, want defaults", got)
+	}
+	if got := sources["claude.base_url"]; got != SourceProject {
+		t.Errorf("claude.base_url source = %v, want project", got)
+	}
+	if got := sources["grants[aws]"]; got != SourceDefaults {
+		t.Errorf("grants[aws] source = %v, want defaults", got)
+	}
+	if got := sources["grants[github]"]; got != SourceProject {
+		t.Errorf("grants[github] source = %v, want project", got)
+	}
+}
+
 func TestMergeConfig_NilInputs(t *testing.T) {
 	t.Run("both nil returns empty Config", func(t *testing.T) {
 		got := MergeConfig(nil, nil)
