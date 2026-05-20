@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 // Config is a parsed devcontainer.json, normalized for moat's use.
@@ -48,6 +50,60 @@ type Mount struct {
 // ErrNotFound is returned by Detect when no devcontainer.json exists.
 // Callers should not treat this as an error; Detect returns (nil, nil) instead.
 var ErrNotFound = errors.New("devcontainer.json not found")
+
+// expandContext holds the values needed to resolve ${var} references in
+// devcontainer.json field values.
+type expandContext struct {
+	workspace       string
+	workspaceFolder string
+	containerEnv    map[string]string // optional; if non-nil, ${containerEnv:X} is resolved
+}
+
+var varRe = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// expandVars replaces ${var} references in s using ctx.  Unknown references
+// are left unchanged (returned verbatim including the ${ } delimiters).
+func expandVars(s string, ctx expandContext) string {
+	return varRe.ReplaceAllStringFunc(s, func(m string) string {
+		name := m[2 : len(m)-1]
+		switch name {
+		case "localWorkspaceFolder":
+			return ctx.workspace
+		case "localWorkspaceFolderBasename":
+			return filepath.Base(ctx.workspace)
+		case "containerWorkspaceFolder":
+			if ctx.workspaceFolder != "" {
+				return ctx.workspaceFolder
+			}
+			return "/workspaces/" + filepath.Base(ctx.workspace)
+		case "containerWorkspaceFolderBasename":
+			if ctx.workspaceFolder != "" {
+				return filepath.Base(ctx.workspaceFolder)
+			}
+			return filepath.Base(ctx.workspace)
+		}
+		if strings.HasPrefix(name, "localEnv:") {
+			return lookupWithDefault(name[len("localEnv:"):], os.Getenv)
+		}
+		if strings.HasPrefix(name, "containerEnv:") && ctx.containerEnv != nil {
+			return lookupWithDefault(name[len("containerEnv:"):], func(k string) string {
+				return ctx.containerEnv[k]
+			})
+		}
+		return m
+	})
+}
+
+// lookupWithDefault parses "KEY" or "KEY:default" from spec, calls lookup(KEY),
+// and returns the default if the value is empty and a default was provided.
+func lookupWithDefault(spec string, lookup func(string) string) string {
+	name, dflt, hasDflt := strings.Cut(spec, ":")
+	v := lookup(name)
+	if v == "" && hasDflt {
+		return dflt
+	}
+	return v
+}
 
 // Detect returns the parsed devcontainer.json from <workspace>/.devcontainer/,
 // or (nil, nil) if the file does not exist. A malformed file is a hard error.

@@ -126,6 +126,38 @@ func TestStripJSONC(t *testing.T) {
 	}
 }
 
+func TestExpandVars(t *testing.T) {
+	t.Setenv("USER", "alice")
+	workspace := "/home/alice/repo"
+	cenv := map[string]string{"FOO": "bar"}
+	ctx := expandContext{
+		workspace:       workspace,
+		workspaceFolder: "/workspaces/repo",
+		containerEnv:    cenv,
+	}
+	cases := []struct{ in, want string }{
+		{"${localWorkspaceFolder}", "/home/alice/repo"},
+		{"${localWorkspaceFolderBasename}", "repo"},
+		{"${containerWorkspaceFolder}", "/workspaces/repo"},
+		{"${containerWorkspaceFolderBasename}", "repo"},
+		{"${localEnv:USER}", "alice"},
+		{"${localEnv:NOPE:fallback}", "fallback"},
+		{"${localEnv:NOPE}", ""},
+		{"${containerEnv:FOO}", "bar"},
+		{"${containerEnv:MISSING:dflt}", "dflt"},
+		{"prefix-${localEnv:USER}-suffix", "prefix-alice-suffix"},
+		{"${unknownVar}", "${unknownVar}"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got := expandVars(c.in, ctx)
+			if got != c.want {
+				t.Errorf("expandVars(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 // setupWorkspace creates a temp dir containing .devcontainer/devcontainer.json
 // copied from testdata/<fixture>.
 func setupWorkspace(t *testing.T, fixture string) string {
