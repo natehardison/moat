@@ -106,6 +106,14 @@ func TestImageTagWithBaseImage(t *testing.T) {
 	}
 }
 
+func TestImageTag_VariesByRemapUID(t *testing.T) {
+	a := ImageTag(nil, &ImageSpec{BaseImage: "ubuntu:24.04", RemapUser: "vscode", RemapUID: 1000, RemapGID: 1000})
+	b := ImageTag(nil, &ImageSpec{BaseImage: "ubuntu:24.04", RemapUser: "vscode", RemapUID: 1001, RemapGID: 1001})
+	if a == b {
+		t.Errorf("tag should differ when RemapUID differs: %s == %s", a, b)
+	}
+}
+
 func TestImageTagDockerModes(t *testing.T) {
 	// docker:host and docker:dind should produce different image tags
 	// because they install different packages (CLI-only vs full daemon)

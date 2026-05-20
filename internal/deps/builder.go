@@ -4,6 +4,7 @@ package deps
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -81,6 +82,11 @@ func ImageTag(deps []Dependency, opts *ImageSpec) string {
 		for _, p := range sortedPlugins {
 			hashInput += ",plugin:" + p
 		}
+	}
+
+	// Include user remap in hash — different host UIDs produce different overlay images.
+	if opts.RemapUser != "" {
+		hashInput += fmt.Sprintf(",remap:%s:%d:%d", opts.RemapUser, opts.RemapUID, opts.RemapGID)
 	}
 
 	// Include hooks in hash (different hooks = different image)
