@@ -971,6 +971,39 @@ func TestGenerateDockerfilePluginValidation(t *testing.T) {
 	})
 }
 
+func TestGenerateDockerfile_AppendsUIDRemap(t *testing.T) {
+	spec := &ImageSpec{
+		BaseImage: "ubuntu:24.04",
+		RemapUser: "vscode",
+		RemapUID:  1234,
+		RemapGID:  1234,
+	}
+	out, err := GenerateDockerfile(nil, spec)
+	if err != nil {
+		t.Fatalf("GenerateDockerfile: %v", err)
+	}
+	df := out.Dockerfile
+	for _, want := range []string{
+		"ARG MOAT_USER=vscode",
+		"ARG MOAT_UID=1234",
+		"ARG MOAT_GID=1234",
+		"groupmod -o -g",
+		"usermod  -o -u",
+	} {
+		if !strings.Contains(df, want) {
+			t.Errorf("dockerfile missing %q\n--- dockerfile ---\n%s", want, df)
+		}
+	}
+}
+
+func TestGenerateDockerfile_NoUIDRemapForRoot(t *testing.T) {
+	spec := &ImageSpec{BaseImage: "ubuntu:24.04"}
+	out, _ := GenerateDockerfile(nil, spec)
+	if strings.Contains(out.Dockerfile, "MOAT_UID") {
+		t.Errorf("should not emit MOAT_UID for spec without RemapUser")
+	}
+}
+
 // Test helper functions
 
 func TestCategorizeDeps(t *testing.T) {
