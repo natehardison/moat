@@ -28,7 +28,8 @@ func MergeConfig(defaults, project *Config) *Config {
 	out := &Config{}
 	mergeScalars(defaults, project, out)
 	mergeMaps(defaults, project, out)
-	// Slice and nested-struct fields are filled by Tasks 3-5.
+	mergeSlices(defaults, project, out)
+	// Nested-struct fields are filled by Tasks 4-5.
 	return out
 }
 
@@ -69,7 +70,8 @@ func cloneConfig(c *Config) *Config {
 	out := &Config{}
 	mergeScalars(empty, c, out)
 	mergeMaps(empty, c, out)
-	// Slice and nested-struct fields filled in Tasks 3-5.
+	mergeSlices(empty, c, out)
+	// Nested-struct fields filled in Tasks 4-5.
 	return out
 }
 
@@ -109,6 +111,63 @@ func mergeIntMap(base, override map[string]int) map[string]int {
 	for k, v := range override {
 		out[k] = v
 	}
+	return out
+}
+
+// mergeSlices handles slice fields on Config.
+//
+// String slices that represent "lists of independent capabilities or items"
+// (Dependencies, Grants, LanguageServers) union with dedupe by string equality.
+// String slices that represent "an ordered invocation" (Command) follow the
+// scalar rule: project wins if non-empty, defaults fills otherwise.
+func mergeSlices(d, p, out *Config) {
+	out.Dependencies = unionDedupe(d.Dependencies, p.Dependencies)
+	out.Grants = unionDedupe(d.Grants, p.Grants)
+	out.LanguageServers = unionDedupe(d.LanguageServers, p.LanguageServers)
+	out.Command = pickStrSlice(p.Command, d.Command)
+}
+
+// unionDedupe returns base ++ override with later duplicates removed
+// (first occurrence wins; order: base first, then override additions).
+// Duplicates within a single input are also collapsed (e.g. unionDedupe(["git","git"], nil) returns ["git"]).
+// Returns nil iff both inputs are nil-or-empty.
+func unionDedupe(base, override []string) []string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(base)+len(override))
+	out := make([]string, 0, len(base)+len(override))
+	for _, v := range base {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	for _, v := range override {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+// pickStrSlice returns primary if non-empty, else fallback (no merge).
+// Returns a fresh slice (no aliasing).
+// Returns nil iff both inputs are nil-or-empty.
+func pickStrSlice(primary, fallback []string) []string {
+	if len(primary) > 0 {
+		out := make([]string, len(primary))
+		copy(out, primary)
+		return out
+	}
+	if len(fallback) == 0 {
+		return nil
+	}
+	out := make([]string, len(fallback))
+	copy(out, fallback)
 	return out
 }
 

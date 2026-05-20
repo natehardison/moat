@@ -111,6 +111,61 @@ func TestMergeConfig_ServicesDeepCopy(t *testing.T) {
 	}
 }
 
+func TestMergeConfig_StringSlices(t *testing.T) {
+	cases := []struct {
+		name             string
+		defaults         *Config
+		project          *Config
+		wantDependencies []string
+		wantGrants       []string
+		wantCommand      []string
+		wantLangServers  []string
+	}{
+		{
+			name:             "union with dedupe",
+			defaults:         &Config{Dependencies: []string{"node@22", "git"}, Grants: []string{"aws"}},
+			project:          &Config{Dependencies: []string{"git", "go"}, Grants: []string{"github"}},
+			wantDependencies: []string{"node@22", "git", "go"},
+			wantGrants:       []string{"aws", "github"},
+		},
+		{
+			name:        "project-only command (Command does NOT union — it's an invocation, not a list of independent items)",
+			defaults:    &Config{Command: []string{"agent", "--default-flag"}},
+			project:     &Config{Command: []string{"agent", "--project-flag"}},
+			wantCommand: []string{"agent", "--project-flag"},
+		},
+		{
+			name:        "command fills from defaults when project unset",
+			defaults:    &Config{Command: []string{"agent", "--default-flag"}},
+			project:     &Config{},
+			wantCommand: []string{"agent", "--default-flag"},
+		},
+		{
+			name:            "language_servers union",
+			defaults:        &Config{LanguageServers: []string{"gopls"}},
+			project:         &Config{LanguageServers: []string{"typescript-language-server"}},
+			wantLangServers: []string{"gopls", "typescript-language-server"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := MergeConfig(tc.defaults, tc.project)
+			if !reflect.DeepEqual(got.Dependencies, tc.wantDependencies) {
+				t.Errorf("Dependencies = %v, want %v", got.Dependencies, tc.wantDependencies)
+			}
+			if !reflect.DeepEqual(got.Grants, tc.wantGrants) {
+				t.Errorf("Grants = %v, want %v", got.Grants, tc.wantGrants)
+			}
+			if !reflect.DeepEqual(got.Command, tc.wantCommand) {
+				t.Errorf("Command = %v, want %v", got.Command, tc.wantCommand)
+			}
+			if !reflect.DeepEqual(got.LanguageServers, tc.wantLangServers) {
+				t.Errorf("LanguageServers = %v, want %v", got.LanguageServers, tc.wantLangServers)
+			}
+		})
+	}
+}
+
 func TestMergeConfig_NilInputs(t *testing.T) {
 	t.Run("both nil returns empty Config", func(t *testing.T) {
 		got := MergeConfig(nil, nil)
