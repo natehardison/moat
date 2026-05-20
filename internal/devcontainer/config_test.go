@@ -158,6 +158,29 @@ func TestExpandVars(t *testing.T) {
 	}
 }
 
+func TestParse_EnvAndWorkspaceFolder(t *testing.T) {
+	t.Setenv("USER", "alice")
+	dir := setupWorkspace(t, "env-and-folder.json")
+	cfg, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	base := filepath.Base(dir)
+	wantFolder := "/work/" + base
+	if cfg.WorkspaceFolder != wantFolder {
+		t.Errorf("WorkspaceFolder = %q, want %q", cfg.WorkspaceFolder, wantFolder)
+	}
+	if cfg.ContainerEnv["BASE"] != "from-container" {
+		t.Errorf("containerEnv[BASE] = %q", cfg.ContainerEnv["BASE"])
+	}
+	if cfg.ContainerEnv["LOCAL_USER"] != "alice" {
+		t.Errorf("containerEnv[LOCAL_USER] = %q, want alice", cfg.ContainerEnv["LOCAL_USER"])
+	}
+	if cfg.RemoteEnv["DERIVED"] != "from-container-x" {
+		t.Errorf("remoteEnv[DERIVED] = %q, want from-container-x", cfg.RemoteEnv["DERIVED"])
+	}
+}
+
 // setupWorkspace creates a temp dir containing .devcontainer/devcontainer.json
 // copied from testdata/<fixture>.
 func setupWorkspace(t *testing.T, fixture string) string {

@@ -186,7 +186,6 @@ func stripJSONC(in []byte) []byte {
 
 // parse is the testable core of Detect.
 func parse(path, workspace string, raw []byte) (*Config, error) {
-	_ = workspace
 	var top map[string]any
 	if err := json.Unmarshal(stripJSONC(raw), &top); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
@@ -225,6 +224,25 @@ func parse(path, workspace string, raw []byte) (*Config, error) {
 
 	if v, ok := top["updateRemoteUserUID"].(bool); ok {
 		cfg.UpdateRemoteUserUID = v
+	}
+
+	ctx := expandContext{workspace: workspace}
+	if v, ok := top["workspaceFolder"].(string); ok && v != "" {
+		cfg.WorkspaceFolder = expandVars(v, ctx)
+	}
+	ctx.workspaceFolder = cfg.WorkspaceFolder
+
+	if rawCE, ok := top["containerEnv"].(map[string]any); ok {
+		for k, v := range rawCE {
+			cfg.ContainerEnv[k] = expandVars(fmt.Sprint(v), ctx)
+		}
+	}
+	ctx.containerEnv = cfg.ContainerEnv
+
+	if rawRE, ok := top["remoteEnv"].(map[string]any); ok {
+		for k, v := range rawRE {
+			cfg.RemoteEnv[k] = expandVars(fmt.Sprint(v), ctx)
+		}
 	}
 
 	return cfg, nil
