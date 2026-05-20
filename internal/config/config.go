@@ -456,13 +456,13 @@ const ConfigFilename = "moat.yaml"
 // LegacyConfigFilename is the legacy config file name, supported as a fallback.
 const LegacyConfigFilename = "agent.yaml"
 
-// loadProject reads moat.yaml (or agent.yaml as fallback) from dir, unmarshals
+// LoadProject reads moat.yaml (or agent.yaml as fallback) from dir, unmarshals
 // it, and returns the raw parsed Config without any validation.
 //
 // Returns (nil, nil) when neither moat.yaml nor agent.yaml exists in dir.
 // Returns (cfg, nil) on successful parse.
 // Returns (nil, err) on read or parse error.
-func loadProject(dir string) (*Config, error) {
+func LoadProject(dir string) (*Config, error) {
 	// Try moat.yaml first, fall back to agent.yaml
 	path := filepath.Join(dir, ConfigFilename)
 	data, err := os.ReadFile(path)
@@ -753,7 +753,7 @@ func validateConfig(cfg *Config) error {
 // Returns (nil, nil) when no project moat.yaml AND no defaults file exist —
 // i.e. there is no Config to load.
 func Load(dir string) (*Config, error) {
-	project, err := loadProject(dir)
+	project, err := LoadProject(dir)
 	if err != nil {
 		return nil, err
 	}
