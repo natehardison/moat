@@ -62,21 +62,80 @@ func mergeMaps(d, p, out *Config) {
 	out.Services = mergeServicesMap(d.Services, p.Services)
 }
 
-// cloneConfig returns a deep enough copy that mutating the returned Config
-// does not affect the original. It is the identity merge with nil on the
-// other side. It never returns nil.
+// cloneConfig returns a deep copy of c that can be mutated without affecting
+// the original. It never returns nil.
+//
+// Unlike MergeConfig, this function preserves slice duplicates (e.g. two
+// volumes with the same name) so that validateConfig can still detect them.
+// Using mergeSlices here would deduplicate the slices as a side-effect of
+// merge logic, which would mask invalid configs during pre-validation.
 func cloneConfig(c *Config) *Config {
 	if c == nil {
 		return &Config{}
 	}
-	// Implement clone by merging the input against an empty Config; the
-	// merge functions copy each field defensively.
-	empty := &Config{}
 	out := &Config{}
-	mergeScalars(empty, c, out)
-	mergeMaps(empty, c, out)
-	mergeSlices(empty, c, out)
-	mergeNested(empty, c, out)
+
+	// Scalars and scalar-like nested structs (all value types — no aliasing).
+	mergeScalars(&Config{}, c, out)
+	out.Interactive = c.Interactive
+	out.Container = mergeContainerConfig(ContainerConfig{}, c.Container)
+	out.Network = mergeNetworkConfig(NetworkConfig{}, c.Network)
+	// mergeNetworkConfig deliberately drops Network.Allow (deprecated hard-error
+	// field). Preserve it in the clone so pre-validation can still catch it.
+	if c.Network.Allow != nil {
+		out.Network.Allow = append([]string(nil), c.Network.Allow...)
+	}
+	out.Snapshots = mergeSnapshotConfig(SnapshotConfig{}, c.Snapshots)
+	out.Tracing = TracingConfig{DisableExec: c.Tracing.DisableExec}
+	out.Hooks = HooksConfig{
+		PostBuild:     c.Hooks.PostBuild,
+		PostBuildRoot: c.Hooks.PostBuildRoot,
+		PreRun:        c.Hooks.PreRun,
+	}
+	out.Clipboard = mergeBoolPtr(c.Clipboard, nil)
+
+	// Maps — deep copy without deduplication.
+	out.Env = mergeStringMap(nil, c.Env)
+	out.Secrets = mergeStringMap(nil, c.Secrets)
+	out.Ports = mergeIntMap(nil, c.Ports)
+	out.Services = mergeServicesMap(nil, c.Services)
+
+	// Nested agent configs — deep copy.
+	out.Claude = mergeClaudeConfig(ClaudeConfig{}, c.Claude)
+	out.Codex = mergeCodexConfig(CodexConfig{}, c.Codex)
+	out.Gemini = mergeGeminiConfig(GeminiConfig{}, c.Gemini)
+
+	// Slices — copy element-by-element WITHOUT deduplication so that
+	// invalid configs (e.g. duplicate volume names) remain detectable.
+	if c.Dependencies != nil {
+		out.Dependencies = append([]string(nil), c.Dependencies...)
+	}
+	if c.Grants != nil {
+		out.Grants = append([]string(nil), c.Grants...)
+	}
+	if c.LanguageServers != nil {
+		out.LanguageServers = append([]string(nil), c.LanguageServers...)
+	}
+	if c.Command != nil {
+		out.Command = append([]string(nil), c.Command...)
+	}
+	if c.Mounts != nil {
+		out.Mounts = make([]MountEntry, len(c.Mounts))
+		for i, m := range c.Mounts {
+			out.Mounts[i] = cloneMountEntry(m)
+		}
+	}
+	if c.Volumes != nil {
+		out.Volumes = make([]VolumeConfig, len(c.Volumes))
+		copy(out.Volumes, c.Volumes)
+	}
+	if c.MCP != nil {
+		out.MCP = make([]MCPServerConfig, len(c.MCP))
+		for i, m := range c.MCP {
+			out.MCP[i] = cloneMCPServerConfig(m)
+		}
+	}
+
 	return out
 }
 

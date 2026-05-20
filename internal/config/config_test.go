@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -2621,5 +2622,108 @@ func TestNetworkHostConfig(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoad_MergesDefaults(t *testing.T) {
+	tmpProject := t.TempDir()
+	tmpMoatHome := t.TempDir()
+	t.Setenv("MOAT_HOME", tmpMoatHome)
+
+	// Stage defaults.yaml at MOAT_HOME/defaults.yaml.
+	defaultsSrc, err := os.ReadFile("testdata/merge/defaults.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpMoatHome, "defaults.yaml"), defaultsSrc, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Stage project moat.yaml.
+	projectSrc, err := os.ReadFile("testdata/merge/project.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpProject, "moat.yaml"), projectSrc, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(tmpProject)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("Load returned nil Config")
+	}
+
+	// Parse expected.
+	var want Config
+	expectedSrc, err := os.ReadFile("testdata/merge/expected.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(expectedSrc, &want); err != nil {
+		t.Fatal(err)
+	}
+
+	// Compare individual fields the fixture cares about.
+	if cfg.Agent != want.Agent {
+		t.Errorf("Agent = %q, want %q", cfg.Agent, want.Agent)
+	}
+	if !reflect.DeepEqual(cfg.Grants, want.Grants) {
+		t.Errorf("Grants = %v, want %v", cfg.Grants, want.Grants)
+	}
+	if cfg.Env["AWS_REGION"] != want.Env["AWS_REGION"] {
+		t.Errorf("Env[AWS_REGION] = %q, want %q", cfg.Env["AWS_REGION"], want.Env["AWS_REGION"])
+	}
+	if cfg.Claude.BaseURL != want.Claude.BaseURL {
+		t.Errorf("Claude.BaseURL = %q, want %q (project)", cfg.Claude.BaseURL, want.Claude.BaseURL)
+	}
+}
+
+// TestLoad_DefaultsNetworkPolicyNotLost regression-tests that a `network.policy`
+// setting in ~/.moat/defaults.yaml survives merge when the project file omits
+// the field. Without the clone-before-pre-validate guard in Load, pre-validation
+// would default project.Network.Policy to "permissive" before merging,
+// silently overriding the defaults file's "strict".
+func TestLoad_DefaultsNetworkPolicyNotLost(t *testing.T) {
+	tmpProject := t.TempDir()
+	tmpMoatHome := t.TempDir()
+	t.Setenv("MOAT_HOME", tmpMoatHome)
+
+	defaultsYAML := []byte("agent: claude\nnetwork:\n  policy: strict\n")
+	if err := os.WriteFile(filepath.Join(tmpMoatHome, "defaults.yaml"), defaultsYAML, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Project omits network.policy entirely.
+	projectYAML := []byte("agent: claude\n")
+	if err := os.WriteFile(filepath.Join(tmpProject, "moat.yaml"), projectYAML, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(tmpProject)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("Load returned nil Config")
+	}
+	if cfg.Network.Policy != "strict" {
+		t.Errorf("Network.Policy = %q, want strict (from defaults; project omitted the field)", cfg.Network.Policy)
+	}
+}
+
+// TestLoad_BothAbsent regression-tests that Load returns (nil, nil) when neither
+// project moat.yaml nor ~/.moat/defaults.yaml exists.
+func TestLoad_BothAbsent(t *testing.T) {
+	tmpProject := t.TempDir()
+	tmpMoatHome := t.TempDir() // empty — no defaults.yaml
+	t.Setenv("MOAT_HOME", tmpMoatHome)
+
+	cfg, err := Load(tmpProject)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg != nil {
+		t.Errorf("Load(both-absent) = %#v, want nil", cfg)
 	}
 }

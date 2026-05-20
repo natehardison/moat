@@ -456,9 +456,13 @@ const ConfigFilename = "moat.yaml"
 // LegacyConfigFilename is the legacy config file name, supported as a fallback.
 const LegacyConfigFilename = "agent.yaml"
 
-// Load reads moat.yaml (or agent.yaml as fallback) from the given directory.
-// Returns nil, nil if neither file exists.
-func Load(dir string) (*Config, error) {
+// loadProject reads moat.yaml (or agent.yaml as fallback) from dir, unmarshals
+// it, and returns the raw parsed Config without any validation.
+//
+// Returns (nil, nil) when neither moat.yaml nor agent.yaml exists in dir.
+// Returns (cfg, nil) on successful parse.
+// Returns (nil, err) on read or parse error.
+func loadProject(dir string) (*Config, error) {
 	// Try moat.yaml first, fall back to agent.yaml
 	path := filepath.Join(dir, ConfigFilename)
 	data, err := os.ReadFile(path)
@@ -481,21 +485,27 @@ func Load(dir string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", filepath.Base(path), err)
 	}
+	return &cfg, nil
+}
 
+// validateConfig validates all fields of cfg. It is called after merging
+// project and defaults so that the fully-resolved Config is checked.
+// All return nil, fmt.Errorf patterns from the original Load are preserved.
+func validateConfig(cfg *Config) error {
 	// Validate runtime field (only "docker" or "apple" allowed)
 	if cfg.Runtime != "" && cfg.Runtime != "docker" && cfg.Runtime != "apple" {
-		return nil, fmt.Errorf("invalid runtime %q: must be 'docker' or 'apple'", cfg.Runtime)
+		return fmt.Errorf("invalid runtime %q: must be 'docker' or 'apple'", cfg.Runtime)
 	}
 
 	// Validate container resource limits
 	if cfg.Container.Memory < 0 {
-		return nil, fmt.Errorf("container.memory must be non-negative, got %d", cfg.Container.Memory)
+		return fmt.Errorf("container.memory must be non-negative, got %d", cfg.Container.Memory)
 	}
 	if cfg.Container.Memory > 0 && cfg.Container.Memory < 128 {
-		return nil, fmt.Errorf("container.memory must be at least 128 MB, got %d MB", cfg.Container.Memory)
+		return fmt.Errorf("container.memory must be at least 128 MB, got %d MB", cfg.Container.Memory)
 	}
 	if cfg.Container.CPUs < 0 {
-		return nil, fmt.Errorf("container.cpus must be non-negative, got %d", cfg.Container.CPUs)
+		return fmt.Errorf("container.cpus must be non-negative, got %d", cfg.Container.CPUs)
 	}
 
 	// Validate ulimits
@@ -507,19 +517,19 @@ func Load(dir string) (*Config, error) {
 	}
 	for name, spec := range cfg.Container.Ulimits {
 		if !validUlimits[name] {
-			return nil, fmt.Errorf("container.ulimits: unknown ulimit %q", name)
+			return fmt.Errorf("container.ulimits: unknown ulimit %q", name)
 		}
 		if spec.Soft < -1 {
-			return nil, fmt.Errorf("container.ulimits.%s: soft limit must be -1 (unlimited) or non-negative", name)
+			return fmt.Errorf("container.ulimits.%s: soft limit must be -1 (unlimited) or non-negative", name)
 		}
 		if spec.Hard < -1 {
-			return nil, fmt.Errorf("container.ulimits.%s: hard limit must be -1 (unlimited) or non-negative", name)
+			return fmt.Errorf("container.ulimits.%s: hard limit must be -1 (unlimited) or non-negative", name)
 		}
 		if spec.Soft == -1 && spec.Hard != -1 {
-			return nil, fmt.Errorf("container.ulimits.%s: soft limit (unlimited) must not exceed hard limit (%d)", name, spec.Hard)
+			return fmt.Errorf("container.ulimits.%s: soft limit (unlimited) must not exceed hard limit (%d)", name, spec.Hard)
 		}
 		if spec.Soft != -1 && spec.Hard != -1 && spec.Soft > spec.Hard {
-			return nil, fmt.Errorf("container.ulimits.%s: soft limit (%d) must not exceed hard limit (%d)", name, spec.Soft, spec.Hard)
+			return fmt.Errorf("container.ulimits.%s: soft limit (%d) must not exceed hard limit (%d)", name, spec.Soft, spec.Hard)
 		}
 	}
 
@@ -530,71 +540,71 @@ func Load(dir string) (*Config, error) {
 
 	// Validate network policy
 	if cfg.Network.Policy != "permissive" && cfg.Network.Policy != "strict" {
-		return nil, fmt.Errorf("invalid network policy %q: must be 'permissive' or 'strict'", cfg.Network.Policy)
+		return fmt.Errorf("invalid network policy %q: must be 'permissive' or 'strict'", cfg.Network.Policy)
 	}
 
 	if len(cfg.Network.Allow) > 0 {
-		return nil, fmt.Errorf("\"network.allow\" is no longer supported, use \"network.rules\" instead\n\nExample:\n  network:\n    rules:\n      - \"api.github.com\"")
+		return fmt.Errorf("\"network.allow\" is no longer supported, use \"network.rules\" instead\n\nExample:\n  network:\n    rules:\n      - \"api.github.com\"")
 	}
 
 	// Validate network.host ports
 	seen := make(map[int]bool, len(cfg.Network.Host))
 	for _, port := range cfg.Network.Host {
 		if port < 1 || port > 65535 {
-			return nil, fmt.Errorf("network.host: port %d is out of range (1-65535)", port)
+			return fmt.Errorf("network.host: port %d is out of range (1-65535)", port)
 		}
 		if seen[port] {
-			return nil, fmt.Errorf("network.host: duplicate port %d", port)
+			return fmt.Errorf("network.host: duplicate port %d", port)
 		}
 		seen[port] = true
 	}
 
 	// Validate sandbox setting
 	if cfg.Sandbox != "" && cfg.Sandbox != "none" {
-		return nil, fmt.Errorf("invalid sandbox value %q: must be empty (default) or 'none'", cfg.Sandbox)
+		return fmt.Errorf("invalid sandbox value %q: must be empty (default) or 'none'", cfg.Sandbox)
 	}
 
 	// Validate base_image: prevent Dockerfile injection via newlines/whitespace.
 	if cfg.BaseImage != "" {
 		cfg.BaseImage = strings.TrimSpace(cfg.BaseImage)
 		if cfg.BaseImage == "" {
-			return nil, fmt.Errorf("base_image must not be empty or whitespace-only")
+			return fmt.Errorf("base_image must not be empty or whitespace-only")
 		}
 		if !imageRefRe.MatchString(cfg.BaseImage) {
-			return nil, fmt.Errorf("base_image %q: invalid image reference", cfg.BaseImage)
+			return fmt.Errorf("base_image %q: invalid image reference", cfg.BaseImage)
 		}
 	}
 
 	// Check for overlapping env and secrets keys
 	for key := range cfg.Secrets {
 		if _, exists := cfg.Env[key]; exists {
-			return nil, fmt.Errorf("key %q defined in both 'env' and 'secrets' - use one or the other", key)
+			return fmt.Errorf("key %q defined in both 'env' and 'secrets' - use one or the other", key)
 		}
 	}
 
 	// Validate secret references have valid URI format
 	for key, ref := range cfg.Secrets {
 		if !strings.Contains(ref, "://") {
-			return nil, fmt.Errorf("secret %q has invalid reference %q: missing scheme (expected format: scheme://path, e.g., op://vault/item/field)", key, ref)
+			return fmt.Errorf("secret %q has invalid reference %q: missing scheme (expected format: scheme://path, e.g., op://vault/item/field)", key, ref)
 		}
 	}
 
 	// Validate command if specified
 	if len(cfg.Command) > 0 && cfg.Command[0] == "" {
-		return nil, fmt.Errorf("command[0] cannot be empty: the first element must be the executable")
+		return fmt.Errorf("command[0] cannot be empty: the first element must be the executable")
 	}
 
 	// Validate Claude marketplace specs
 	for name, spec := range cfg.Claude.Marketplaces {
 		if err := validateMarketplaceSpec(name, spec); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	// Validate Claude MCP server specs
 	for name, spec := range cfg.Claude.MCP {
 		if err := validateMCPServerSpec("claude", name, spec); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
@@ -602,45 +612,45 @@ func Load(dir string) (*Config, error) {
 	if cfg.Claude.BaseURL != "" {
 		u, err := url.Parse(cfg.Claude.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("claude.base_url: invalid URL %q: %w", cfg.Claude.BaseURL, err)
+			return fmt.Errorf("claude.base_url: invalid URL %q: %w", cfg.Claude.BaseURL, err)
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return nil, fmt.Errorf("claude.base_url: scheme must be http or https, got %q", u.Scheme)
+			return fmt.Errorf("claude.base_url: scheme must be http or https, got %q", u.Scheme)
 		}
 		if u.Host == "" {
-			return nil, fmt.Errorf("claude.base_url: missing host in %q", cfg.Claude.BaseURL)
+			return fmt.Errorf("claude.base_url: missing host in %q", cfg.Claude.BaseURL)
 		}
 	}
 
 	if cfg.Claude.BaseURL != "" && cfg.Claude.LLMGateway != nil {
-		return nil, fmt.Errorf("claude: base_url and llm-gateway are mutually exclusive — base_url routes to an external LLM proxy, llm-gateway routes to a local Keep sidecar")
+		return fmt.Errorf("claude: base_url and llm-gateway are mutually exclusive — base_url routes to an external LLM proxy, llm-gateway routes to a local Keep sidecar")
 	}
 
 	// Validate Codex MCP server specs
 	for name, spec := range cfg.Codex.MCP {
 		if err := validateMCPServerSpec("codex", name, spec); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	// Validate Gemini MCP server specs
 	for name, spec := range cfg.Gemini.MCP {
 		if err := validateMCPServerSpec("gemini", name, spec); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	// Validate that codex.mcp and gemini.mcp don't both define local MCP servers.
 	// Both write to /workspace/.mcp.json, so only one can be used at a time.
 	if len(cfg.Codex.MCP) > 0 && len(cfg.Gemini.MCP) > 0 {
-		return nil, fmt.Errorf("both codex.mcp and gemini.mcp define local MCP servers, but they share the same .mcp.json file — only one agent section can define local MCP servers")
+		return fmt.Errorf("both codex.mcp and gemini.mcp define local MCP servers, but they share the same .mcp.json file — only one agent section can define local MCP servers")
 	}
 
 	// Validate top-level MCP server specs
 	seenNames := make(map[string]bool)
 	for i, spec := range cfg.MCP {
 		if err := validateTopLevelMCPServerSpec(i, spec, seenNames); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
@@ -649,42 +659,42 @@ func Load(dir string) (*Config, error) {
 		seen := make(map[string]bool)
 		for _, ls := range cfg.LanguageServers {
 			if seen[ls] {
-				return nil, fmt.Errorf("duplicate language server: %s", ls)
+				return fmt.Errorf("duplicate language server: %s", ls)
 			}
 			seen[ls] = true
 		}
 	}
 	if err := langserver.Validate(cfg.LanguageServers); err != nil {
-		return nil, err
+		return err
 	}
 
 	// Validate volumes
 	if len(cfg.Volumes) > 0 {
 		if cfg.Name == "" {
-			return nil, fmt.Errorf("'name' is required when volumes are configured (volumes are scoped by agent name)")
+			return fmt.Errorf("'name' is required when volumes are configured (volumes are scoped by agent name)")
 		}
 		seenVolNames := make(map[string]bool)
 		seenVolTargets := make(map[string]bool)
 		for i, vol := range cfg.Volumes {
 			prefix := fmt.Sprintf("volumes[%d]", i)
 			if vol.Name == "" {
-				return nil, fmt.Errorf("%s: 'name' is required", prefix)
+				return fmt.Errorf("%s: 'name' is required", prefix)
 			}
 			if !volumeNameRe.MatchString(vol.Name) {
-				return nil, fmt.Errorf("%s: invalid name %q (must match [a-z0-9][a-z0-9_-]*)", prefix, vol.Name)
+				return fmt.Errorf("%s: invalid name %q (must match [a-z0-9][a-z0-9_-]*)", prefix, vol.Name)
 			}
 			if vol.Target == "" {
-				return nil, fmt.Errorf("%s: 'target' is required", prefix)
+				return fmt.Errorf("%s: 'target' is required", prefix)
 			}
 			if !filepath.IsAbs(vol.Target) {
-				return nil, fmt.Errorf("%s: 'target' must be an absolute path, got %q", prefix, vol.Target)
+				return fmt.Errorf("%s: 'target' must be an absolute path, got %q", prefix, vol.Target)
 			}
 			if seenVolNames[vol.Name] {
-				return nil, fmt.Errorf("%s: duplicate volume name %q", prefix, vol.Name)
+				return fmt.Errorf("%s: duplicate volume name %q", prefix, vol.Name)
 			}
 			seenVolNames[vol.Name] = true
 			if seenVolTargets[vol.Target] {
-				return nil, fmt.Errorf("%s: duplicate volume target %q", prefix, vol.Target)
+				return fmt.Errorf("%s: duplicate volume target %q", prefix, vol.Target)
 			}
 			seenVolTargets[vol.Target] = true
 		}
@@ -697,14 +707,14 @@ func Load(dir string) (*Config, error) {
 			prefix := fmt.Sprintf("mounts[%d]", i)
 			if m.Target != "" {
 				if seenMountTargets[m.Target] {
-					return nil, fmt.Errorf("%s: duplicate mount target %q", prefix, m.Target)
+					return fmt.Errorf("%s: duplicate mount target %q", prefix, m.Target)
 				}
 				seenMountTargets[m.Target] = true
 			}
 			// Validate and normalize exclude paths
 			cleaned, err := ValidateExcludes(m.Exclude, m.Target)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			cfg.Mounts[i].Exclude = cleaned
 
@@ -713,7 +723,7 @@ func Load(dir string) (*Config, error) {
 				excAbs := filepath.Join(m.Target, exc)
 				for _, vol := range cfg.Volumes {
 					if vol.Target == excAbs || strings.HasPrefix(vol.Target, excAbs+"/") {
-						return nil, fmt.Errorf("%s: exclude path %q conflicts with volume target %q", prefix, exc, vol.Target)
+						return fmt.Errorf("%s: exclude path %q conflicts with volume target %q", prefix, exc, vol.Target)
 					}
 				}
 			}
@@ -728,7 +738,49 @@ func Load(dir string) (*Config, error) {
 		cfg.Snapshots.Retention.MaxCount = 10
 	}
 
-	return &cfg, nil
+	return nil
+}
+
+// Load reads moat.yaml from dir, merges in ~/.moat/defaults.yaml if present,
+// and validates the resolved Config.
+//
+// The project moat.yaml is also validated independently before merging so
+// that duplicate-entry checks (e.g. duplicate MCP server names) catch
+// problems in the user's project file even when MergeConfig would silently
+// dedupe them. The pre-validation runs on a clone of the project so that
+// validate-time normalizations do not pollute the merge input.
+//
+// Returns (nil, nil) when no project moat.yaml AND no defaults file exist —
+// i.e. there is no Config to load.
+func Load(dir string) (*Config, error) {
+	project, err := loadProject(dir)
+	if err != nil {
+		return nil, err
+	}
+	defaults, err := LoadDefaults()
+	if err != nil {
+		return nil, err
+	}
+	if project == nil && defaults == nil {
+		return nil, nil
+	}
+
+	// Pre-validate raw project on a clone, so validate-time normalizations
+	// (e.g. defaulting network.policy to "permissive") do not pollute the
+	// MergeConfig input. Without this clone, a defaults-file setting like
+	// network.policy: strict would be silently lost when the project file
+	// omits the field.
+	if project != nil {
+		if err := validateConfig(cloneConfig(project)); err != nil {
+			return nil, err
+		}
+	}
+
+	cfg := MergeConfig(defaults, project)
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // validateMarketplaceSpec validates a marketplace specification.

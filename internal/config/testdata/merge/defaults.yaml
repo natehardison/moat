@@ -1,0 +1,7 @@
+agent: claude
+grants:
+  - aws
+env:
+  AWS_REGION: us-east-1
+claude:
+  base_url: https://default.example

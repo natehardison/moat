@@ -1,0 +1,6 @@
+grants:
+  - github
+env:
+  AWS_REGION: us-west-2
+claude:
+  base_url: https://project.example
