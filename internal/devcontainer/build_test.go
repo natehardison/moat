@@ -167,3 +167,30 @@ func TestBuildBase_CachedSkipsBuild(t *testing.T) {
 		t.Errorf("cached path should skip BuildImage, got %d builds", len(bm.builds))
 	}
 }
+
+func TestBuildBase_ContainerEnvOverlay(t *testing.T) {
+	dir := setupWorkspace(t, "env-and-folder.json")
+	t.Setenv("USER", "alice")
+	cfg, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm := &fakeBuildManager{}
+	tag, err := BuildBase(context.Background(), bm, dir, cfg, BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	if len(bm.builds) != 2 {
+		t.Fatalf("got %d builds, want 2 (base + env overlay)", len(bm.builds))
+	}
+	overlay := bm.builds[1].dockerfile
+	if !strings.Contains(overlay, `ENV BASE="from-container"`) {
+		t.Errorf("overlay missing BASE env: %q", overlay)
+	}
+	if !strings.Contains(overlay, `ENV LOCAL_USER="alice"`) {
+		t.Errorf("overlay missing LOCAL_USER env: %q", overlay)
+	}
+	if bm.builds[1].tag != tag {
+		t.Errorf("overlay tag = %q, want %q", bm.builds[1].tag, tag)
+	}
+}

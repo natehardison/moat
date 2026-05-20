@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/majorcontext/moat/internal/container"
 )
@@ -53,6 +54,24 @@ func ContentHash(workspace string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// envOverlayDockerfile bakes containerEnv keys into the image as ENV lines.
+func envOverlayDockerfile(baseTag string, env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	fmt.Fprintf(&b, "FROM %s\n", baseTag)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "ENV %s=%q\n", k, env[k])
+	}
+	return b.String()
+}
+
 // BuildOptions configures BuildBase.
 type BuildOptions struct {
 	NoCache bool // force rebuild
@@ -94,6 +113,12 @@ func BuildBase(ctx context.Context, bm container.BuildManager, workspace string,
 		if err := bm.BuildImage(ctx, df, tag, container.BuildOptions{NoCache: opts.NoCache}); err != nil {
 			return "", fmt.Errorf("staging %s: %w", cfg.Image, err)
 		}
+		if len(cfg.ContainerEnv) > 0 {
+			overlay := envOverlayDockerfile(tag, cfg.ContainerEnv)
+			if err := bm.BuildImage(ctx, overlay, tag, container.BuildOptions{NoCache: opts.NoCache}); err != nil {
+				return "", fmt.Errorf("baking containerEnv: %w", err)
+			}
+		}
 		return tag, nil
 	}
 
@@ -115,6 +140,12 @@ func BuildBase(ctx context.Context, bm container.BuildManager, workspace string,
 	}
 	if err := bm.BuildImage(ctx, string(dfBytes), tag, bopts); err != nil {
 		return "", fmt.Errorf("building devcontainer Dockerfile: %w", err)
+	}
+	if len(cfg.ContainerEnv) > 0 {
+		overlay := envOverlayDockerfile(tag, cfg.ContainerEnv)
+		if err := bm.BuildImage(ctx, overlay, tag, container.BuildOptions{NoCache: opts.NoCache}); err != nil {
+			return "", fmt.Errorf("baking containerEnv: %w", err)
+		}
 	}
 	return tag, nil
 }
