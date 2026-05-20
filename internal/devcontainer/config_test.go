@@ -3,6 +3,7 @@ package devcontainer
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -215,6 +216,26 @@ func TestParse_BadMountType(t *testing.T) {
 	_, err := Detect(dir)
 	if err == nil {
 		t.Fatal("Detect should fail on unsupported mount type")
+	}
+}
+
+func TestParse_Lifecycle(t *testing.T) {
+	dir := setupWorkspace(t, "lifecycle.json")
+	cfg, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if cfg.InitializeCmd != "echo init" {
+		t.Errorf("InitializeCmd = %q", cfg.InitializeCmd)
+	}
+	if cfg.OnCreateCmd != "echo hello" {
+		t.Errorf("OnCreateCmd = %q", cfg.OnCreateCmd)
+	}
+	if !strings.Contains(cfg.PostCreateCmd, "echo first") || !strings.Contains(cfg.PostCreateCmd, "echo second") {
+		t.Errorf("PostCreateCmd = %q", cfg.PostCreateCmd)
+	}
+	if cfg.PostStartCmd != "echo start" {
+		t.Errorf("PostStartCmd = %q", cfg.PostStartCmd)
 	}
 }
 

@@ -255,6 +255,11 @@ func parse(path, workspace string, raw []byte) (*Config, error) {
 		}
 	}
 
+	cfg.InitializeCmd = expandVars(parseLifecycleCommand(top["initializeCommand"]), ctx)
+	cfg.OnCreateCmd = expandVars(parseLifecycleCommand(top["onCreateCommand"]), ctx)
+	cfg.PostCreateCmd = expandVars(parseLifecycleCommand(top["postCreateCommand"]), ctx)
+	cfg.PostStartCmd = expandVars(parseLifecycleCommand(top["postStartCommand"]), ctx)
+
 	return cfg, nil
 }
 
