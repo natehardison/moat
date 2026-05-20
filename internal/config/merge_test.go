@@ -166,6 +166,71 @@ func TestMergeConfig_StringSlices(t *testing.T) {
 	}
 }
 
+func TestMergeConfig_StructSlices(t *testing.T) {
+	t.Run("Mounts keyed by (Source,Target); project wins on collision", func(t *testing.T) {
+		defaults := &Config{Mounts: []MountEntry{
+			{Source: "/host/a", Target: "/c/a"},
+			{Source: "/host/b", Target: "/c/b", ReadOnly: true},
+		}}
+		project := &Config{Mounts: []MountEntry{
+			{Source: "/host/b", Target: "/c/b", ReadOnly: false}, // collision, project wins
+			{Source: "/host/c", Target: "/c/c"},                  // new
+		}}
+		got := MergeConfig(defaults, project)
+		want := []MountEntry{
+			{Source: "/host/a", Target: "/c/a"},
+			{Source: "/host/b", Target: "/c/b", ReadOnly: false},
+			{Source: "/host/c", Target: "/c/c"},
+		}
+		if !reflect.DeepEqual(got.Mounts, want) {
+			t.Errorf("Mounts = %+v\nwant      %+v", got.Mounts, want)
+		}
+	})
+
+	t.Run("Mounts same source, different targets, both kept", func(t *testing.T) {
+		defaults := &Config{Mounts: []MountEntry{{Source: "/host/a", Target: "/c/a"}}}
+		project := &Config{Mounts: []MountEntry{{Source: "/host/a", Target: "/c/different"}}}
+		got := MergeConfig(defaults, project)
+		if len(got.Mounts) != 2 {
+			t.Errorf("expected both mounts retained, got %+v", got.Mounts)
+		}
+	})
+
+	t.Run("Volumes keyed by Name", func(t *testing.T) {
+		defaults := &Config{Volumes: []VolumeConfig{{Name: "cache", Target: "/cache"}}}
+		project := &Config{Volumes: []VolumeConfig{
+			{Name: "cache", Target: "/cache", ReadOnly: true}, // collision, project wins
+			{Name: "data", Target: "/data"},                   // new
+		}}
+		got := MergeConfig(defaults, project)
+		want := []VolumeConfig{
+			{Name: "cache", Target: "/cache", ReadOnly: true},
+			{Name: "data", Target: "/data"},
+		}
+		if !reflect.DeepEqual(got.Volumes, want) {
+			t.Errorf("Volumes = %+v\nwant      %+v", got.Volumes, want)
+		}
+	})
+
+	t.Run("MCP keyed by Name", func(t *testing.T) {
+		defaults := &Config{MCP: []MCPServerConfig{{Name: "filesys", URL: "https://a"}}}
+		project := &Config{MCP: []MCPServerConfig{
+			{Name: "filesys", URL: "https://b"}, // collision, project wins
+			{Name: "github", URL: "https://gh"}, // new
+		}}
+		got := MergeConfig(defaults, project)
+		if len(got.MCP) != 2 {
+			t.Fatalf("MCP len = %d, want 2", len(got.MCP))
+		}
+		if got.MCP[0].Name != "filesys" || got.MCP[0].URL != "https://b" {
+			t.Errorf("MCP[0] = %+v, want {filesys, https://b}", got.MCP[0])
+		}
+		if got.MCP[1].Name != "github" {
+			t.Errorf("MCP[1] = %+v, want github entry", got.MCP[1])
+		}
+	})
+}
+
 func TestMergeConfig_NilInputs(t *testing.T) {
 	t.Run("both nil returns empty Config", func(t *testing.T) {
 		got := MergeConfig(nil, nil)

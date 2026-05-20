@@ -120,11 +120,124 @@ func mergeIntMap(base, override map[string]int) map[string]int {
 // (Dependencies, Grants, LanguageServers) union with dedupe by string equality.
 // String slices that represent "an ordered invocation" (Command) follow the
 // scalar rule: project wins if non-empty, defaults fills otherwise.
+// Struct slices (Mounts, Volumes, MCP) union with keyed dedupe; project wins
+// on key collision.
 func mergeSlices(d, p, out *Config) {
 	out.Dependencies = unionDedupe(d.Dependencies, p.Dependencies)
 	out.Grants = unionDedupe(d.Grants, p.Grants)
 	out.LanguageServers = unionDedupe(d.LanguageServers, p.LanguageServers)
 	out.Command = pickStrSlice(p.Command, d.Command)
+	out.Mounts = mergeMounts(d.Mounts, p.Mounts)
+	out.Volumes = mergeVolumes(d.Volumes, p.Volumes)
+	out.MCP = mergeMCPServers(d.MCP, p.MCP)
+}
+
+// mergeMounts unions two []MountEntry slices, deduped by (Source, Target).
+// Project entries replace defaults entries on key collision.
+// Returns nil iff both inputs are nil-or-empty.
+// MountEntry.Exclude is a []string, so each entry is deep-copied.
+func mergeMounts(base, override []MountEntry) []MountEntry {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	type key struct{ Source, Target string }
+	seen := make(map[key]int, len(base)+len(override))
+	out := make([]MountEntry, 0, len(base)+len(override))
+	for _, m := range base {
+		k := key{m.Source, m.Target}
+		seen[k] = len(out)
+		out = append(out, cloneMountEntry(m))
+	}
+	for _, m := range override {
+		k := key{m.Source, m.Target}
+		if idx, ok := seen[k]; ok {
+			out[idx] = cloneMountEntry(m)
+			continue
+		}
+		seen[k] = len(out)
+		out = append(out, cloneMountEntry(m))
+	}
+	return out
+}
+
+// cloneMountEntry returns a deep copy of m. MountEntry.Exclude is a []string
+// reference type and must be copied to avoid aliasing.
+func cloneMountEntry(m MountEntry) MountEntry {
+	out := m // copies all scalar/bool/string fields
+	if m.Exclude != nil {
+		out.Exclude = append([]string(nil), m.Exclude...)
+	}
+	return out
+}
+
+// mergeVolumes unions two []VolumeConfig slices, deduped by Name.
+// Project entries replace defaults entries on Name collision.
+// Returns nil iff both inputs are nil-or-empty.
+// VolumeConfig has no reference-type fields; value copy is safe.
+func mergeVolumes(base, override []VolumeConfig) []VolumeConfig {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	seen := make(map[string]int, len(base)+len(override))
+	out := make([]VolumeConfig, 0, len(base)+len(override))
+	for _, v := range base {
+		seen[v.Name] = len(out)
+		out = append(out, v)
+	}
+	for _, v := range override {
+		if idx, ok := seen[v.Name]; ok {
+			out[idx] = v
+			continue
+		}
+		seen[v.Name] = len(out)
+		out = append(out, v)
+	}
+	return out
+}
+
+// mergeMCPServers unions two []MCPServerConfig slices, deduped by Name.
+// Project entries replace defaults entries on Name collision.
+// Returns nil iff both inputs are nil-or-empty.
+// MCPServerConfig has pointer fields (Auth, Policy) that are deep-copied to
+// avoid aliasing; keep.PolicyConfig.Deny is a []string that also needs copying.
+func mergeMCPServers(base, override []MCPServerConfig) []MCPServerConfig {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	seen := make(map[string]int, len(base)+len(override))
+	out := make([]MCPServerConfig, 0, len(base)+len(override))
+	for _, m := range base {
+		seen[m.Name] = len(out)
+		out = append(out, cloneMCPServerConfig(m))
+	}
+	for _, m := range override {
+		if idx, ok := seen[m.Name]; ok {
+			out[idx] = cloneMCPServerConfig(m)
+			continue
+		}
+		seen[m.Name] = len(out)
+		out = append(out, cloneMCPServerConfig(m))
+	}
+	return out
+}
+
+// cloneMCPServerConfig returns a deep copy of m. The Auth and Policy pointer
+// fields are copied so that mutating the clone does not affect the original.
+// keep.PolicyConfig.Deny is a []string and is also deep-copied.
+func cloneMCPServerConfig(m MCPServerConfig) MCPServerConfig {
+	out := m // copies Name, URL (strings)
+	if m.Auth != nil {
+		authCopy := *m.Auth // MCPAuthConfig has only string fields
+		out.Auth = &authCopy
+	}
+	if m.Policy != nil {
+		policyCopy := *m.Policy // copies Pack, File, Mode (strings)
+		if m.Policy.Deny != nil {
+			policyCopy.Deny = append([]string(nil), m.Policy.Deny...)
+		}
+		out.Policy = &policyCopy
+	}
+	return out
 }
 
 // unionDedupe returns base ++ override with later duplicates removed
