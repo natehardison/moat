@@ -6,6 +6,69 @@ import (
 	"testing"
 )
 
+func TestParse_Build(t *testing.T) {
+	dir := setupWorkspace(t, "with-build.json")
+	cfg, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if cfg.Build == nil {
+		t.Fatal("Build is nil")
+	}
+	if cfg.Build.Dockerfile != "Dockerfile" {
+		t.Errorf("Dockerfile = %q", cfg.Build.Dockerfile)
+	}
+	if cfg.Build.Context != ".." {
+		t.Errorf("Context = %q", cfg.Build.Context)
+	}
+	if cfg.Build.Args["BASE"] != "ubuntu:24.04" {
+		t.Errorf("Args[BASE] = %q", cfg.Build.Args["BASE"])
+	}
+	if cfg.Build.Target != "dev" {
+		t.Errorf("Target = %q", cfg.Build.Target)
+	}
+	if cfg.User != "vscode" {
+		t.Errorf("User = %q", cfg.User)
+	}
+	if cfg.Home != "/home/vscode" {
+		t.Errorf("Home = %q", cfg.Home)
+	}
+}
+
+func TestParse_UserPrecedence(t *testing.T) {
+	// remoteUser wins over containerUser
+	dir := setupWorkspace(t, "users.json")
+	cfg, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if cfg.User != "vscode" {
+		t.Errorf("User = %q, want vscode (remoteUser wins over containerUser)", cfg.User)
+	}
+}
+
+func TestParse_NoImageNoBuild(t *testing.T) {
+	dir := t.TempDir()
+	dcDir := filepath.Join(dir, ".devcontainer")
+	os.MkdirAll(dcDir, 0o755)
+	os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(`{"name": "broken"}`), 0o644)
+	_, err := Detect(dir)
+	if err == nil {
+		t.Fatal("Detect should fail when neither image nor build is set")
+	}
+}
+
+func TestParse_BrokenJSON(t *testing.T) {
+	dir := t.TempDir()
+	dcDir := filepath.Join(dir, ".devcontainer")
+	os.MkdirAll(dcDir, 0o755)
+	os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(`{not json`), 0o644)
+	_, err := Detect(dir)
+	if err == nil {
+		t.Fatal("Detect should fail on malformed JSON")
+	}
+}
+
 func TestDetect_Missing(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := Detect(dir)

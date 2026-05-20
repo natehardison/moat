@@ -1,0 +1,9 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": { "BASE": "ubuntu:24.04" },
+    "target": "dev"
+  },
+  "remoteUser": "vscode"
+}

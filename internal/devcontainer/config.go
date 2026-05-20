@@ -4,6 +4,7 @@
 package devcontainer
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -129,14 +130,67 @@ func stripJSONC(in []byte) []byte {
 
 // parse is the testable core of Detect.
 func parse(path, workspace string, raw []byte) (*Config, error) {
-	// Stub — wired up in Task 1.3.
 	_ = workspace
-	_ = raw
-	return &Config{
-		Image:               "ubuntu:24.04",
-		User:                "root",
-		Home:                "/root",
-		UpdateRemoteUserUID: true,
+	var top map[string]any
+	if err := json.Unmarshal(stripJSONC(raw), &top); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	cfg := &Config{
 		SourcePath:          path,
-	}, nil
+		UpdateRemoteUserUID: true,
+		ContainerEnv:        map[string]string{},
+		RemoteEnv:           map[string]string{},
+	}
+
+	if v, ok := top["image"].(string); ok {
+		cfg.Image = v
+	}
+	if rawBuild, ok := top["build"].(map[string]any); ok {
+		cfg.Build = parseBuild(rawBuild)
+	}
+	if cfg.Image == "" && cfg.Build == nil {
+		return nil, fmt.Errorf("%s: must specify either \"image\" or \"build.dockerfile\"", path)
+	}
+
+	// User: remoteUser ?? containerUser ?? "root"
+	if v, ok := top["remoteUser"].(string); ok && v != "" {
+		cfg.User = v
+	} else if v, ok := top["containerUser"].(string); ok && v != "" {
+		cfg.User = v
+	} else {
+		cfg.User = "root"
+	}
+	if cfg.User == "root" {
+		cfg.Home = "/root"
+	} else {
+		cfg.Home = "/home/" + cfg.User
+	}
+
+	if v, ok := top["updateRemoteUserUID"].(bool); ok {
+		cfg.UpdateRemoteUserUID = v
+	}
+
+	return cfg, nil
+}
+
+func parseBuild(raw map[string]any) *BuildConfig {
+	df, _ := raw["dockerfile"].(string)
+	if df == "" {
+		return nil
+	}
+	bc := &BuildConfig{Dockerfile: df, Context: "."}
+	if v, ok := raw["context"].(string); ok && v != "" {
+		bc.Context = v
+	}
+	if v, ok := raw["target"].(string); ok {
+		bc.Target = v
+	}
+	if rawArgs, ok := raw["args"].(map[string]any); ok && len(rawArgs) > 0 {
+		bc.Args = make(map[string]string, len(rawArgs))
+		for k, v := range rawArgs {
+			bc.Args[k] = fmt.Sprint(v)
+		}
+	}
+	return bc
 }
