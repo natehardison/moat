@@ -97,6 +97,24 @@ func BuildBase(ctx context.Context, bm container.BuildManager, workspace string,
 		return tag, nil
 	}
 
-	// Dockerfile build implemented in Task 1.11.
-	return "", fmt.Errorf("build.dockerfile not yet implemented")
+	dcDir := filepath.Join(workspace, ".devcontainer")
+	dfPath := filepath.Join(dcDir, cfg.Build.Dockerfile)
+	dfBytes, err := os.ReadFile(dfPath)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", dfPath, err)
+	}
+	bopts := container.BuildOptions{
+		NoCache:   opts.NoCache,
+		Target:    cfg.Build.Target,
+		BuildArgs: cfg.Build.Args,
+		// Always include the Dockerfile in the context so BuildImage can locate
+		// it without depending on the host filesystem layout.
+		ContextFiles: map[string][]byte{
+			"Dockerfile": dfBytes,
+		},
+	}
+	if err := bm.BuildImage(ctx, string(dfBytes), tag, bopts); err != nil {
+		return "", fmt.Errorf("building devcontainer Dockerfile: %w", err)
+	}
+	return tag, nil
 }

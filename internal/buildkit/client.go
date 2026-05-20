@@ -75,6 +75,7 @@ type BuildOptions struct {
 	NoCache    bool              // Disable build cache
 	Platform   string            // Target platform (e.g., "linux/amd64")
 	BuildArgs  map[string]string // Build arguments
+	Target     string            // Build target stage (--target)
 	Output     io.Writer         // Progress output (default: os.Stdout)
 }
 
@@ -131,6 +132,11 @@ func (c *Client) Build(ctx context.Context, opts BuildOptions) error {
 	// Add build args
 	for k, v := range opts.BuildArgs {
 		solveOpt.FrontendAttrs["build-arg:"+k] = v
+	}
+
+	// Set build target stage if specified
+	if opts.Target != "" {
+		solveOpt.FrontendAttrs["target"] = opts.Target
 	}
 
 	// Disable cache if requested

@@ -116,6 +116,38 @@ func TestBuildBase_ImagePulledViaFROM(t *testing.T) {
 	}
 }
 
+func TestBuildBase_DockerfileWithArgsAndTarget(t *testing.T) {
+	dir := setupWorkspace(t, "with-build.json")
+	// The fixture references "Dockerfile" relative to .devcontainer/ and
+	// context "..". Materialize a stub Dockerfile so the loader doesn't fail.
+	if err := os.WriteFile(
+		filepath.Join(dir, ".devcontainer", "Dockerfile"),
+		[]byte("ARG BASE=ubuntu:24.04\nFROM ${BASE} AS dev\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm := &fakeBuildManager{}
+	tag, err := BuildBase(context.Background(), bm, dir, cfg, BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	if tag == "" {
+		t.Fatal("empty tag")
+	}
+	if len(bm.builds) != 1 {
+		t.Fatalf("got %d builds, want 1", len(bm.builds))
+	}
+	df := bm.builds[0].dockerfile
+	if !strings.Contains(df, "ARG BASE=") {
+		t.Errorf("dockerfile content not preserved: %q", df)
+	}
+}
+
 func TestBuildBase_CachedSkipsBuild(t *testing.T) {
 	dir := setupWorkspace(t, "minimal-image.json")
 	cfg, _ := Detect(dir)
