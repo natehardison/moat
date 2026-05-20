@@ -753,16 +753,10 @@ func Sources(defaults, project, merged *Config) SourceMap {
 	// Nested struct: claude.
 	annotateClaude(sm, "claude", defaults.Claude, project.Claude, merged.Claude)
 
-	// You should also annotate Codex/Gemini/Container/Network/Snapshots/
-	// Tracing/Hooks. For v1 the deeper annotations are optional — `moat
-	// config show --source` will still work for the fields that ARE
-	// annotated, and unannotated fields just won't carry a source comment.
-	// Implementer: choose how deep to go. At minimum: annotate the top-level
-	// keys (e.g. annotate `codex` as a whole based on whether
-	// project.Codex == zero-value vs defaults.Codex). The test only checks
-	// the explicit paths exercised in TestConfigSources (which calls Sources),
-	// annotation is a quality-of-output improvement, not a strict requirement
-	// for this task to pass.
+	// Currently only top-level scalars, maps, string slices, and
+	// claude.{base_url,sync_logs} are annotated. Other nested fields
+	// (codex.*, gemini.*, container.*, network.*, snapshots.*, etc.)
+	// pass through unannotated; extend annotateXxx helpers to broaden coverage.
 
 	return sm
 }
