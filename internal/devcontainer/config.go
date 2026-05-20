@@ -10,7 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+
+	"github.com/majorcontext/moat/internal/ui"
 )
 
 // Config is a parsed devcontainer.json, normalized for moat's use.
@@ -50,6 +53,45 @@ type Mount struct {
 // ErrNotFound is returned by Detect when no devcontainer.json exists.
 // Callers should not treat this as an error; Detect returns (nil, nil) instead.
 var ErrNotFound = errors.New("devcontainer.json not found")
+
+// parseLogger is a test hook for capturing the unsupported-fields warn payload.
+// Production parse() calls ui.Warn directly via emitUnsupportedWarning.
+var parseLogger func([]string)
+
+var supportedFields = map[string]bool{
+	"name":                true,
+	"image":               true,
+	"build":               true,
+	"remoteUser":          true,
+	"containerUser":       true,
+	"workspaceFolder":     true,
+	"containerEnv":        true,
+	"remoteEnv":           true,
+	"mounts":              true,
+	"initializeCommand":   true,
+	"onCreateCommand":     true,
+	"postCreateCommand":   true,
+	"postStartCommand":    true,
+	"updateRemoteUserUID": true,
+}
+
+func collectUnsupported(top map[string]any) []string {
+	var keys []string
+	for k := range top {
+		if !supportedFields[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// emitUnsupportedWarning prints a single ui.Warn listing fields that moat
+// does not honor. Tests bypass this via parseLogger.
+func emitUnsupportedWarning(path string, fields []string) {
+	ui.Warnf("%s: ignoring unsupported devcontainer fields: %s",
+		path, strings.Join(fields, ", "))
+}
 
 // expandContext holds the values needed to resolve ${var} references in
 // devcontainer.json field values.
@@ -189,6 +231,14 @@ func parse(path, workspace string, raw []byte) (*Config, error) {
 	var top map[string]any
 	if err := json.Unmarshal(stripJSONC(raw), &top); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	if unsupported := collectUnsupported(top); len(unsupported) > 0 {
+		if parseLogger != nil {
+			parseLogger(unsupported)
+		} else {
+			emitUnsupportedWarning(path, unsupported)
+		}
 	}
 
 	cfg := &Config{

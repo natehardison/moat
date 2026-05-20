@@ -239,6 +239,24 @@ func TestParse_Lifecycle(t *testing.T) {
 	}
 }
 
+func TestParse_UnsupportedFieldsCollected(t *testing.T) {
+	dir := setupWorkspace(t, "unsupported.json")
+	var got []string
+	parseLogger = func(fields []string) { got = fields }
+	t.Cleanup(func() { parseLogger = nil })
+	_, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	want := map[string]bool{"features": true, "runArgs": true, "forwardPorts": true, "customizations": true}
+	for _, f := range got {
+		delete(want, f)
+	}
+	if len(want) != 0 {
+		t.Errorf("unsupported fields not collected: %v (got=%v)", want, got)
+	}
+}
+
 // setupWorkspace creates a temp dir containing .devcontainer/devcontainer.json
 // copied from testdata/<fixture>.
 func setupWorkspace(t *testing.T, fixture string) string {
