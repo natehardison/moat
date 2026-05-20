@@ -124,6 +124,20 @@ type Run struct {
 
 	// ServiceContainers maps service name to container ID (e.g., "postgres" -> "abc123").
 	ServiceContainers map[string]string
+
+	// DevcontainerHash is the sha256 of .devcontainer/ contents at run creation.
+	// Empty if no devcontainer was used. Compared against the live workspace
+	// at status time to surface drift hints.
+	DevcontainerHash string `json:"devcontainerHash,omitempty"`
+
+	// PostStartCmd is the devcontainer postStartCommand. Persisted so that
+	// restarts re-run it. Empty when no devcontainer is used.
+	PostStartCmd string `json:"postStartCmd,omitempty"`
+
+	// PostStartUser/Home/Workdir record the exec context for PostStartCmd.
+	PostStartUser    string `json:"postStartUser,omitempty"`
+	PostStartHome    string `json:"postStartHome,omitempty"`
+	PostStartWorkdir string `json:"postStartWorkdir,omitempty"`
 }
 
 // Options configures a new run.
