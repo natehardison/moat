@@ -37,6 +37,30 @@ func TestDetect_Minimal(t *testing.T) {
 	}
 }
 
+func TestStripJSONC(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		out  string
+	}{
+		{"plain", `{"a":1}`, `{"a":1}`},
+		{"line-comment", "{\n  // comment\n  \"a\": 1\n}", "{\n  \n  \"a\": 1\n}"},
+		{"block-comment", `{"a": /* hi */ 1}`, `{"a":  1}`},
+		{"comment-in-string", `{"a": "// not a comment"}`, `{"a": "// not a comment"}`},
+		{"escaped-quote-in-string", `{"a": "x\"// still string"}`, `{"a": "x\"// still string"}`},
+		{"trailing-comma-object", `{"a":1,}`, `{"a":1}`},
+		{"trailing-comma-array", `{"a":[1,2,]}`, `{"a":[1,2]}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := string(stripJSONC([]byte(c.in)))
+			if got != c.out {
+				t.Errorf("stripJSONC(%q) = %q, want %q", c.in, got, c.out)
+			}
+		})
+	}
+}
+
 // setupWorkspace creates a temp dir containing .devcontainer/devcontainer.json
 // copied from testdata/<fixture>.
 func setupWorkspace(t *testing.T, fixture string) string {

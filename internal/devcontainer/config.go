@@ -62,6 +62,69 @@ func Detect(workspace string) (*Config, error) {
 	return parse(path, workspace, raw)
 }
 
+// stripJSONC removes // line comments, /* block comments */, and trailing
+// commas from JSONC, leaving the result valid JSON. String literals are
+// preserved verbatim, including escape sequences.
+func stripJSONC(in []byte) []byte {
+	out := make([]byte, 0, len(in))
+	i := 0
+	inString := false
+	for i < len(in) {
+		c := in[i]
+		if inString {
+			out = append(out, c)
+			if c == '\\' && i+1 < len(in) {
+				out = append(out, in[i+1])
+				i += 2
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+		if c == '"' {
+			inString = true
+			out = append(out, c)
+			i++
+			continue
+		}
+		if c == '/' && i+1 < len(in) {
+			if in[i+1] == '/' {
+				for i < len(in) && in[i] != '\n' {
+					i++
+				}
+				continue
+			}
+			if in[i+1] == '*' {
+				i += 2
+				for i+1 < len(in) && !(in[i] == '*' && in[i+1] == '/') {
+					i++
+				}
+				if i+1 < len(in) {
+					i += 2
+				}
+				continue
+			}
+		}
+		// Drop a trailing comma before } or ] (skipping whitespace).
+		if c == ',' {
+			j := i + 1
+			for j < len(in) && (in[j] == ' ' || in[j] == '\t' || in[j] == '\n' || in[j] == '\r') {
+				j++
+			}
+			if j < len(in) && (in[j] == '}' || in[j] == ']') {
+				i++
+				continue
+			}
+		}
+		out = append(out, c)
+		i++
+	}
+	return out
+}
+
 // parse is the testable core of Detect.
 func parse(path, workspace string, raw []byte) (*Config, error) {
 	// Stub — wired up in Task 1.3.
