@@ -89,3 +89,64 @@ func TestE2E_DevcontainerImageOnly(t *testing.T) {
 		t.Errorf("workspace not mounted at /workspaces/<name>\nLogs:%s", formatLogEntries(logs))
 	}
 }
+
+// TestE2E_DevcontainerDockerfileBuild verifies that a devcontainer.json with a
+// "build.dockerfile" key causes moat to build the image and run the resulting
+// container.  The custom binary "moat-marker" installed by the Dockerfile must
+// be present and executable.
+func TestE2E_DevcontainerDockerfileBuild(t *testing.T) {
+	requireDocker(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	workspace := copyDevcontainerFixture(t, "devcontainer/dockerfile-build")
+
+	mgr, err := run.NewManagerWithOptions(run.ManagerOptions{NoSandbox: &[]bool{true}[0]})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	r, err := mgr.Create(ctx, run.Options{
+		Name:      "e2e-dc-dockerfile-build",
+		Workspace: workspace,
+		Cmd:       []string{"moat-marker"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer mgr.Destroy(context.Background(), r.ID)
+
+	if err := mgr.Start(ctx, r.ID, run.StartOptions{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := mgr.Wait(ctx, r.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	store, err := storage.NewRunStore(storage.DefaultBaseDir(), r.ID)
+	if err != nil {
+		t.Fatalf("NewRunStore: %v", err)
+	}
+
+	logs, err := store.ReadLogs(0, 100)
+	if err != nil {
+		t.Fatalf("ReadLogs: %v", err)
+	}
+
+	found := false
+	for _, entry := range logs {
+		if strings.Contains(entry.Line, "moat-was-here") {
+			found = true
+			t.Logf("moat-marker output: %s", entry.Line)
+			break
+		}
+	}
+	if !found {
+		t.Errorf("custom binary moat-marker missing from built container\nLogs:%s", formatLogEntries(logs))
+	}
+}
