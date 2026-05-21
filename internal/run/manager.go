@@ -2907,8 +2907,10 @@ region = %s
 	r.SSHAgentServer = sshServer
 
 	// Persist devcontainer-derived fields on the Run so that moat exec, status
-	// drift detection, and post-start command execution have the right context.
+	// drift detection, and lifecycle hook execution have the right context.
 	if useDC {
+		r.OnCreateCmd = activeDCCfg.OnCreateCmd
+		r.PostCreateCmd = activeDCCfg.PostCreateCmd
 		r.PostStartCmd = activeDCCfg.PostStartCmd
 		r.PostStartUser = activeDCCfg.User
 		r.PostStartHome = activeDCCfg.Home
@@ -3169,6 +3171,38 @@ func (m *Manager) setupFirewall(ctx context.Context, r *Run) error {
 	return nil
 }
 
+// runDevcontainerLifecycleHooks executes the devcontainer in-container
+// lifecycle hooks (onCreate, postCreate, postStart) via Exec after the
+// container has started. The probed user login-shell env is used so hooks
+// see PATH, conda init, nvm, etc.
+//
+// onCreate and postCreate failures are hard errors (abort the Start).
+// postStart failures warn and continue.
+func (m *Manager) runDevcontainerLifecycleHooks(ctx context.Context, r *Run) error {
+	// No lifecycle hooks to run.
+	if r.OnCreateCmd == "" && r.PostCreateCmd == "" && r.PostStartCmd == "" {
+		return nil
+	}
+	rt := m.defaultRuntime()
+	probedEnv, _ := devcontainer.ProbeUserEnv(ctx, rt, r.ContainerID, r.PostStartUser)
+	hookOpts := devcontainer.HookOpts{
+		User:    r.PostStartUser,
+		Home:    r.PostStartHome,
+		Workdir: r.PostStartWorkdir,
+		Env:     probedEnv,
+	}
+	if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "onCreate", r.OnCreateCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+		return fmt.Errorf("onCreateCommand failed: %w", err)
+	}
+	if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "postCreate", r.PostCreateCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+		return fmt.Errorf("postCreateCommand failed: %w", err)
+	}
+	if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "postStart", r.PostStartCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+		ui.Warnf("postStartCommand failed: %v", err)
+	}
+	return nil
+}
+
 // Start begins execution of a run.
 func (m *Manager) Start(ctx context.Context, runID string, opts StartOptions) error {
 	m.mu.Lock()
@@ -3187,6 +3221,17 @@ func (m *Manager) Start(ctx context.Context, runID string, opts StartOptions) er
 	}
 
 	if err := m.setupFirewall(ctx, r); err != nil {
+		return err
+	}
+
+	// Run devcontainer lifecycle hooks (onCreate, postCreate, postStart) after
+	// the container starts. onCreate and postCreate failures abort the start;
+	// postStart failures warn and continue (see runDevcontainerLifecycleHooks).
+	if err := m.runDevcontainerLifecycleHooks(ctx, r); err != nil {
+		r.SetStateFailedAt(err.Error(), time.Now())
+		if stopErr := m.defaultRuntime().StopContainer(ctx, r.ContainerID); stopErr != nil {
+			log.Debug("failed to stop container after lifecycle hook error", "error", stopErr)
+		}
 		return err
 	}
 

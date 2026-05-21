@@ -3,8 +3,10 @@ package run
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -374,4 +376,128 @@ func TestManager_DevcontainerOverridesUserAndWorkdir(t *testing.T) {
 	if !hasRemoteEnv {
 		t.Errorf("BAZ=qux missing from simulated env list: %v", envList)
 	}
+}
+
+// TestRunDevcontainerLifecycleHooks verifies that runDevcontainerLifecycleHooks
+// calls onCreate, postCreate, and postStart in order, and that onCreate/postCreate
+// failures abort while postStart failures only warn.
+func TestRunDevcontainerLifecycleHooks(t *testing.T) {
+	t.Run("all hooks run in order", func(t *testing.T) {
+		var seen []string
+		rt := &fakeRuntimeWithBuild{
+			flexibleRuntime: flexibleRuntime{
+				execFn: func(_ context.Context, _ string, cmd []string, _ []byte, _ io.Writer, _ io.Writer) error {
+					joined := strings.Join(cmd, " ")
+					switch {
+					case strings.Contains(joined, "echo onCreate"):
+						seen = append(seen, "onCreate")
+					case strings.Contains(joined, "echo postCreate"):
+						seen = append(seen, "postCreate")
+					case strings.Contains(joined, "echo postStart"):
+						seen = append(seen, "postStart")
+					}
+					return nil
+				},
+			},
+			bm: newFakeBuildManager(),
+		}
+		m := newEdgeCaseManager(t, rt)
+		r := &Run{
+			ID:               "run_hooks_order",
+			ContainerID:      "ctr-hooks",
+			OnCreateCmd:      "echo onCreate",
+			PostCreateCmd:    "echo postCreate",
+			PostStartCmd:     "echo postStart",
+			PostStartUser:    "vscode",
+			PostStartHome:    "/home/vscode",
+			PostStartWorkdir: "/workspaces/repo",
+		}
+		if err := m.runDevcontainerLifecycleHooks(context.Background(), r); err != nil {
+			t.Fatalf("runDevcontainerLifecycleHooks: %v", err)
+		}
+		// The probe Exec call also fires (login-shell probe), so filter to only
+		// our echo commands.
+		want := []string{"onCreate", "postCreate", "postStart"}
+		if !reflect.DeepEqual(seen, want) {
+			t.Errorf("hook order = %v, want %v", seen, want)
+		}
+	})
+
+	t.Run("no hooks is noop", func(t *testing.T) {
+		execCalled := false
+		rt := &fakeRuntimeWithBuild{
+			flexibleRuntime: flexibleRuntime{
+				execFn: func(_ context.Context, _ string, _ []string, _ []byte, _ io.Writer, _ io.Writer) error {
+					execCalled = true
+					return nil
+				},
+			},
+			bm: newFakeBuildManager(),
+		}
+		m := newEdgeCaseManager(t, rt)
+		r := &Run{ID: "run_no_hooks", ContainerID: "ctr-noop"}
+		if err := m.runDevcontainerLifecycleHooks(context.Background(), r); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if execCalled {
+			t.Error("Exec should not be called when no hooks are configured")
+		}
+	})
+
+	t.Run("onCreate failure aborts", func(t *testing.T) {
+		callCount := 0
+		rt := &fakeRuntimeWithBuild{
+			flexibleRuntime: flexibleRuntime{
+				execFn: func(_ context.Context, _ string, cmd []string, _ []byte, _ io.Writer, _ io.Writer) error {
+					joined := strings.Join(cmd, " ")
+					if strings.Contains(joined, "false") {
+						callCount++
+						return &container.ExecError{ExitCode: 1}
+					}
+					return nil // probe succeeds
+				},
+			},
+			bm: newFakeBuildManager(),
+		}
+		m := newEdgeCaseManager(t, rt)
+		r := &Run{
+			ID:            "run_oncreate_fail",
+			ContainerID:   "ctr-fail",
+			OnCreateCmd:   "false",
+			PostCreateCmd: "echo postCreate",
+			PostStartCmd:  "echo postStart",
+		}
+		err := m.runDevcontainerLifecycleHooks(context.Background(), r)
+		if err == nil {
+			t.Fatal("expected error when onCreate fails")
+		}
+		if !strings.Contains(err.Error(), "onCreateCommand failed") {
+			t.Errorf("error = %q, want onCreateCommand failed", err.Error())
+		}
+	})
+
+	t.Run("postStart failure warns but does not error", func(t *testing.T) {
+		rt := &fakeRuntimeWithBuild{
+			flexibleRuntime: flexibleRuntime{
+				execFn: func(_ context.Context, _ string, cmd []string, _ []byte, _ io.Writer, _ io.Writer) error {
+					joined := strings.Join(cmd, " ")
+					if strings.Contains(joined, "false") {
+						return &container.ExecError{ExitCode: 1}
+					}
+					return nil
+				},
+			},
+			bm: newFakeBuildManager(),
+		}
+		m := newEdgeCaseManager(t, rt)
+		r := &Run{
+			ID:           "run_poststart_fail",
+			ContainerID:  "ctr-ps-fail",
+			PostStartCmd: "false",
+		}
+		// postStart failure must NOT return an error.
+		if err := m.runDevcontainerLifecycleHooks(context.Background(), r); err != nil {
+			t.Fatalf("postStart failure should warn-and-continue, got error: %v", err)
+		}
+	})
 }

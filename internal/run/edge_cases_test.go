@@ -31,6 +31,7 @@ type flexibleRuntime struct {
 	waitFn             func(ctx context.Context, id string) (int64, error)
 	containerLogsFn    func(ctx context.Context, id string) (io.ReadCloser, error)
 	containerLogsAllFn func(ctx context.Context, id string) ([]byte, error)
+	execFn             func(ctx context.Context, id string, cmd []string, stdin []byte, stdout, stderr io.Writer) error
 	runtimeType        container.RuntimeType
 }
 
@@ -125,7 +126,10 @@ func (f *flexibleRuntime) StartAttached(context.Context, string, container.Attac
 	return nil
 }
 func (f *flexibleRuntime) ResizeTTY(context.Context, string, uint, uint) error { return nil }
-func (f *flexibleRuntime) Exec(context.Context, string, []string, []byte, io.Writer, io.Writer) error {
+func (f *flexibleRuntime) Exec(ctx context.Context, id string, cmd []string, stdin []byte, stdout, stderr io.Writer) error {
+	if f.execFn != nil {
+		return f.execFn(ctx, id, cmd, stdin, stdout, stderr)
+	}
 	return nil
 }
 

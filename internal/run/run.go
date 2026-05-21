@@ -130,11 +130,16 @@ type Run struct {
 	// at status time to surface drift hints.
 	DevcontainerHash string `json:"devcontainerHash,omitempty"`
 
+	// OnCreateCmd / PostCreateCmd are the devcontainer onCreate and postCreate
+	// commands. They run once when the container first starts.
+	OnCreateCmd   string `json:"onCreateCmd,omitempty"`
+	PostCreateCmd string `json:"postCreateCmd,omitempty"`
+
 	// PostStartCmd is the devcontainer postStartCommand. Persisted so that
 	// restarts re-run it. Empty when no devcontainer is used.
 	PostStartCmd string `json:"postStartCmd,omitempty"`
 
-	// PostStartUser/Home/Workdir record the exec context for PostStartCmd.
+	// PostStartUser/Home/Workdir record the exec context for lifecycle hooks.
 	PostStartUser    string `json:"postStartUser,omitempty"`
 	PostStartHome    string `json:"postStartHome,omitempty"`
 	PostStartWorkdir string `json:"postStartWorkdir,omitempty"`
