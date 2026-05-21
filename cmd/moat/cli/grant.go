@@ -4,6 +4,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/majorcontext/moat/internal/credential"
 	"github.com/majorcontext/moat/internal/provider"
+	"github.com/majorcontext/moat/internal/provider/util"
 	"github.com/majorcontext/moat/internal/providers/aws"
+	"github.com/majorcontext/moat/internal/providers/configprovider"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -24,6 +27,8 @@ var (
 	awsExternalID      string
 	awsProfile         string
 )
+
+var grantHost string
 
 var grantCmd = &cobra.Command{
 	Use:   "grant <provider>",
@@ -63,6 +68,7 @@ func init() {
 	grantCmd.Flags().StringVar(&awsSessionDuration, "session-duration", "", "Session duration (default: 15m, max: 12h)")
 	grantCmd.Flags().StringVar(&awsExternalID, "external-id", "", "External ID for role assumption")
 	grantCmd.Flags().StringVar(&awsProfile, "aws-profile", "", "AWS shared config profile: pass-through mode (no --role) or source profile in role mode; falls back to AWS_PROFILE env var if not set")
+	grantCmd.Flags().StringVar(&grantHost, "host", "", "Custom host for YAML-defined providers (e.g., gitlab.acme.com for self-hosted GitLab)")
 }
 
 // saveCredential stores a credential and returns the file path.
@@ -94,6 +100,14 @@ func runGrant(cmd *cobra.Command, args []string) error {
 		providerName = "codex"
 	case "google":
 		providerName = "gemini"
+	}
+
+	if grantHost != "" {
+		overridden, err := runHostOverride(providerName, grantHost)
+		if err != nil {
+			return err
+		}
+		return grantWithOverride(cmd.Context(), overridden)
 	}
 
 	// Look up provider in registry
@@ -177,4 +191,135 @@ func readPassword() ([]byte, error) {
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	return []byte(strings.TrimSuffix(line, "\n")), err
+}
+
+// errOverrideAborted signals that the user declined (or could not be asked,
+// in a non-TTY session) to overwrite an existing user override. Cobra prints
+// the wrapped message via its default error handling; the non-zero exit is
+// what matters.
+var errOverrideAborted = errors.New("aborted: existing override not overwritten")
+
+// runHostOverride validates the host, loads the embedded provider def, applies
+// the override, optionally prompts before overwriting an existing user file,
+// writes the file, and returns the in-memory overridden def.
+func runHostOverride(providerName, host string) (configprovider.ProviderDef, error) {
+	if err := configprovider.ValidateHostname(host); err != nil {
+		return configprovider.ProviderDef{}, err
+	}
+
+	def, err := configprovider.LoadEmbeddedDef(providerName)
+	if err != nil {
+		return configprovider.ProviderDef{}, fmt.Errorf(
+			"--host is not supported for %q (built-in provider with a fixed host)\nSupported providers: %s",
+			providerName, strings.Join(configprovider.EmbeddedProviderNames(), ", "),
+		)
+	}
+
+	overridden, err := configprovider.ApplyHostOverride(def, host)
+	if err != nil {
+		return configprovider.ProviderDef{}, err
+	}
+
+	path := configprovider.UserOverridePath(providerName)
+	if err := writeOverrideIfChanged(path, providerName, overridden, host); err != nil {
+		return configprovider.ProviderDef{}, err
+	}
+
+	return overridden, nil
+}
+
+// writeOverrideIfChanged inspects an existing override file (if any) and
+// either skips, prompts, or writes the new override.
+func writeOverrideIfChanged(path, providerName string, overridden configprovider.ProviderDef, host string) error {
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading existing override %s: %w", path, err)
+	}
+	if err == nil {
+		existingDef, parseErr := configprovider.ParseProviderDef(existing)
+		if parseErr != nil {
+			return fmt.Errorf("existing override at %s is invalid YAML; remove or fix it before re-running: %w", path, parseErr)
+		}
+		if overridesMatch(existingDef, overridden) {
+			fmt.Printf("Override at %s already set to %s — no changes needed\n", path, host)
+			return nil
+		}
+		fmt.Printf("Existing override at %s: hosts=%v\n", path, existingDef.Hosts)
+		fmt.Printf("New override:           hosts=%v\n", overridden.Hosts)
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprintf(os.Stderr, "Non-interactive session: re-run interactively to confirm, or remove %s to accept the new override\n", path)
+			return errOverrideAborted
+		}
+		ok, err := util.Confirm("Overwrite?")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errOverrideAborted
+		}
+		if err := configprovider.WriteUserOverride(providerName, overridden); err != nil {
+			return err
+		}
+		fmt.Printf("Updated provider override at %s\n", path)
+		return nil
+	}
+	if err := configprovider.WriteUserOverride(providerName, overridden); err != nil {
+		return err
+	}
+	fmt.Printf("Wrote provider override to %s\n", path)
+	return nil
+}
+
+// overridesMatch compares only the fields that ApplyHostOverride modifies
+// (Hosts and Validate.URL). Other fields come from the immutable embedded
+// def and cannot differ between two overrides for the same provider.
+func overridesMatch(a, b configprovider.ProviderDef) bool {
+	if len(a.Hosts) != len(b.Hosts) {
+		return false
+	}
+	for i := range a.Hosts {
+		if a.Hosts[i] != b.Hosts[i] {
+			return false
+		}
+	}
+	aURL, bURL := "", ""
+	if a.Validate != nil {
+		aURL = a.Validate.URL
+	}
+	if b.Validate != nil {
+		bURL = b.Validate.URL
+	}
+	return aURL == bURL
+}
+
+// grantWithOverride constructs a one-off ConfigProvider from the overridden
+// def, runs its Grant flow, and saves the resulting credential. Bypasses the
+// global registry so token validation hits the user's host.
+func grantWithOverride(ctx context.Context, def configprovider.ProviderDef) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cp := configprovider.NewConfigProvider(def, "custom")
+	provCred, err := cp.Grant(ctx)
+	if err != nil {
+		return err
+	}
+	cred := credential.Credential{
+		Provider:  credential.Provider(provCred.Provider),
+		Token:     provCred.Token,
+		Scopes:    provCred.Scopes,
+		ExpiresAt: provCred.ExpiresAt,
+		CreatedAt: provCred.CreatedAt,
+		Metadata:  provCred.Metadata,
+	}
+	credPath, err := saveCredential(cred)
+	if err != nil {
+		return err
+	}
+	if credential.ActiveProfile != "" {
+		fmt.Printf("Credential saved to %s (profile: %s)\n", credPath, credential.ActiveProfile)
+	} else {
+		fmt.Printf("Credential saved to %s\n", credPath)
+	}
+	return nil
 }

@@ -15,6 +15,10 @@ Moat is pre-1.0. The CLI interface and `moat.yaml` schema may change between min
 - **Claude on AWS Bedrock** — `claude.bedrock` in `moat.yaml` routes Claude Code through AWS Bedrock using the `aws` grant's STS role, via Claude Code's `awsCredentialExport` hook. Adds `claude.env` for merging arbitrary vars into Claude Code's `settings.json` env block (honors the host `~/.claude/settings.json` env). ([#NNN](https://github.com/majorcontext/moat/pull/NNN))
 - **AWS credential pass-through** — `moat grant aws --aws-profile <name>` (no `--role`) stores a profile-based credential; moat serves the profile's resolved credentials directly without calling `sts:AssumeRole`. Useful for Claude-on-Bedrock and other AWS workloads in environments where the operator has no usable base IAM identity (SSO / `credential_process` brokers issuing role-scoped credentials directly). ([#NNN](https://github.com/majorcontext/moat/pull/NNN))
 
+### Added
+
+- **Self-hosted host override on `moat grant`** — `moat grant gitlab --host gitlab.acme.com` writes a user provider YAML at `~/.moat/providers/gitlab.yaml` that routes credential injection and token validation to a custom host. Works for any built-in YAML provider (gitlab, sentry, datadog, linear, vercel, elevenlabs, brave-search, telegram). Use it to grant credentials for self-hosted deployments without hand-authoring a YAML override. ([#TBD](https://github.com/majorcontext/moat/pull/TBD))
+
 ## v0.5.1 — 2026-04-28
 
 Patch release with one security fix (IPv6 egress firewall) and a batch of run-lifecycle and proxy fixes. Adds `MOAT_HOME` for relocating moat state, a multi-runtime manager so Docker and Apple containers can coexist in one install, TUI debug shortcuts, and Python 3.13/3.14 support. Gatekeeper is extracted to its own repository.

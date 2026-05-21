@@ -167,3 +167,5 @@ After creating the file, verify it loads:
 ```bash
 moat grant providers
 ```
+
+For built-in YAML providers, `moat grant <name> --host <hostname>` is a shortcut that generates the override file for you. See the [Self-hosted GitLab section](./04-grants.md#self-hosted-gitlab) in the Grants reference for an example.
