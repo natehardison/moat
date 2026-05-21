@@ -558,10 +558,10 @@ func resolveBaseImage(cfg *config.Config) string {
 	return cfg.BaseImage
 }
 
-// useDevcontainerForImage returns true when the devcontainer should drive
+// UseDevcontainerForImage returns true when the devcontainer should drive
 // the base image. moat.yaml's base_image: or dependencies: take precedence;
 // otherwise the devcontainer wins.
-func useDevcontainerForImage(cfg *config.Config, dc *devcontainer.Config) bool {
+func UseDevcontainerForImage(cfg *config.Config, dc *devcontainer.Config) bool {
 	if dc == nil {
 		return false
 	}
@@ -595,7 +595,7 @@ func (m *Manager) resolveImageSpecForDevcontainer(ctx context.Context, opts Opti
 	if opts.NoDevcontainer {
 		dcCfg = nil
 	}
-	useDC := useDevcontainerForImage(opts.Config, dcCfg)
+	useDC := UseDevcontainerForImage(opts.Config, dcCfg)
 	if dcCfg != nil && !useDC && (opts.Config != nil && (opts.Config.BaseImage != "" || len(opts.Config.Dependencies) > 0)) {
 		ui.Warnf("devcontainer.json detected but ignored: moat.yaml specifies base_image or dependencies")
 	}
@@ -759,7 +759,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 	workspaceTarget := "/workspace"
 	var earlyDCRemoteEnv map[string]string // devcontainer remoteEnv (nil when not active)
 	if !opts.NoDevcontainer {
-		if earlyDCCfg, _ := devcontainer.Detect(opts.Workspace); earlyDCCfg != nil && useDevcontainerForImage(opts.Config, earlyDCCfg) {
+		if earlyDCCfg, _ := devcontainer.Detect(opts.Workspace); earlyDCCfg != nil && UseDevcontainerForImage(opts.Config, earlyDCCfg) {
 			if earlyDCCfg.WorkspaceFolder != "" {
 				workspaceTarget = earlyDCCfg.WorkspaceFolder
 			} else {

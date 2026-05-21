@@ -1998,7 +1998,7 @@ func TestManager_DevcontainerPrecedence(t *testing.T) {
 			if c.hasDevcontainer {
 				dc = &devcontainer.Config{Image: "ubuntu:24.04"}
 			}
-			got := useDevcontainerForImage(cfg, dc)
+			got := UseDevcontainerForImage(cfg, dc)
 			if got != c.wantUse {
 				t.Errorf("%s: got %v, want %v", c.name, got, c.wantUse)
 			}

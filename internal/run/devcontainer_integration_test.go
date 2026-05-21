@@ -332,7 +332,7 @@ func TestManager_DevcontainerOverridesUserAndWorkdir(t *testing.T) {
 	// Verify workspaceTarget computation — mirror the logic in Create.
 	workspaceTarget := "/workspace"
 	if !false /* !opts.NoDevcontainer */ {
-		if earlyDCCfg, _ := devcontainer.Detect(workspace); earlyDCCfg != nil && useDevcontainerForImage(nil, earlyDCCfg) {
+		if earlyDCCfg, _ := devcontainer.Detect(workspace); earlyDCCfg != nil && UseDevcontainerForImage(nil, earlyDCCfg) {
 			if earlyDCCfg.WorkspaceFolder != "" {
 				workspaceTarget = earlyDCCfg.WorkspaceFolder
 			} else {
