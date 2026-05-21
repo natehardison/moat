@@ -18,41 +18,37 @@ import (
 // Probe strategy: print a UUID marker, dump /proc/self/environ
 // (null-separated) between markers, print the marker again. Fall back
 // to `printenv` (newline-separated) when /proc fails.
-func ProbeUserEnv(ctx context.Context, rt ExecRuntime, containerID, user string) (map[string]string, error) {
-	return probeUserEnvWithMark(ctx, rt, containerID, user, newMark())
+func ProbeUserEnv(ctx context.Context, rt ExecRuntime, containerID string) (map[string]string, error) {
+	return probeUserEnvWithMark(ctx, rt, containerID, newMark())
 }
 
-func probeUserEnvWithMark(ctx context.Context, rt ExecRuntime, containerID, user, mark string) (map[string]string, error) {
-	env, err := probeWith(ctx, rt, containerID, user, mark, "cat /proc/self/environ", "\x00")
-	if err == nil && env != nil {
+func probeUserEnvWithMark(ctx context.Context, rt ExecRuntime, containerID, mark string) (map[string]string, error) {
+	if env := probeWith(ctx, rt, containerID, mark, "cat /proc/self/environ", "\x00"); env != nil {
 		return finishEnv(env), nil
 	}
-	env, err = probeWith(ctx, rt, containerID, user, mark, "printenv", "\n")
-	if err != nil {
-		return nil, err
-	}
+	env := probeWith(ctx, rt, containerID, mark, "printenv", "\n")
 	if env == nil {
 		return map[string]string{}, nil
 	}
 	return finishEnv(env), nil
 }
 
-func probeWith(ctx context.Context, rt ExecRuntime, containerID, user, mark, cmd, sep string) (map[string]string, error) {
+func probeWith(ctx context.Context, rt ExecRuntime, containerID, mark, cmd, sep string) map[string]string {
 	inner := fmt.Sprintf("echo -n %s; %s; echo -n %s", mark, cmd, mark)
 	args := []string{"/bin/sh", "-lc", inner}
 	var out bytes.Buffer
 	if err := rt.Exec(ctx, containerID, args, nil, &out, io.Discard); err != nil {
-		return nil, nil // try fallback
+		return nil // try fallback
 	}
 	raw := out.String()
 	start := strings.Index(raw, mark)
 	end := strings.LastIndex(raw, mark)
 	if start == -1 || end == -1 || end == start {
-		return nil, nil
+		return nil
 	}
 	body := raw[start+len(mark) : end]
 	if body == "" {
-		return nil, nil
+		return nil
 	}
 	env := map[string]string{}
 	for _, entry := range strings.Split(body, sep) {
@@ -60,7 +56,7 @@ func probeWith(ctx context.Context, rt ExecRuntime, containerID, user, mark, cmd
 			env[entry[:i]] = entry[i+1:]
 		}
 	}
-	return env, nil
+	return env
 }
 
 func finishEnv(env map[string]string) map[string]string {

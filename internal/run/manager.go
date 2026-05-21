@@ -3191,7 +3191,7 @@ func (m *Manager) runDevcontainerLifecycleHooks(ctx context.Context, r *Run) err
 		return nil
 	}
 	rt := m.defaultRuntime()
-	probedEnv, _ := devcontainer.ProbeUserEnv(ctx, rt, r.ContainerID, r.PostStartUser)
+	probedEnv, _ := devcontainer.ProbeUserEnv(ctx, rt, r.ContainerID)
 	hookOpts := devcontainer.HookOpts{
 		User:    r.PostStartUser,
 		Home:    r.PostStartHome,

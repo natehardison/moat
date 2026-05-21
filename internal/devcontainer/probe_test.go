@@ -27,7 +27,7 @@ func TestProbeUserEnv_ParsesProcEnviron(t *testing.T) {
 	body := "PATH=/usr/local/bin:/usr/bin\x00FOO=bar\x00PWD=/should/drop\x00"
 	fr := &fakeProbeRuntime{stdouts: []string{marker + body + marker}}
 	// Override the mark generator for determinism.
-	env, err := probeUserEnvWithMark(context.Background(), fr, "ctr", "vscode", marker)
+	env, err := probeUserEnvWithMark(context.Background(), fr, "ctr", marker)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestProbeUserEnv_DedupsPath(t *testing.T) {
 	marker := "M"
 	body := "PATH=/a:/b:/a:/c\x00"
 	fr := &fakeProbeRuntime{stdouts: []string{marker + body + marker}}
-	env, _ := probeUserEnvWithMark(context.Background(), fr, "ctr", "root", marker)
+	env, _ := probeUserEnvWithMark(context.Background(), fr, "ctr", marker)
 	if env["PATH"] != "/a:/b:/c" {
 		t.Errorf("PATH = %q, want /a:/b:/c", env["PATH"])
 	}
@@ -60,7 +60,7 @@ func TestProbeUserEnv_FallsBackToPrintenv(t *testing.T) {
 		"",
 		marker + "PATH=/bin\n" + marker,
 	}}
-	env, err := probeUserEnvWithMark(context.Background(), fr, "ctr", "root", marker)
+	env, err := probeUserEnvWithMark(context.Background(), fr, "ctr", marker)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}

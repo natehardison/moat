@@ -96,7 +96,8 @@ func BuildBase(ctx context.Context, bm container.BuildManager, workspace string,
 	tag := fmt.Sprintf("moat-devcontainer-%s:base-%s", filepath.Base(workspace), hash[:12])
 
 	if !opts.NoCache {
-		exists, err := bm.ImageExists(ctx, tag)
+		var exists bool
+		exists, err = bm.ImageExists(ctx, tag)
 		if err != nil {
 			return "", fmt.Errorf("checking %s: %w", tag, err)
 		}
@@ -110,12 +111,14 @@ func BuildBase(ctx context.Context, bm container.BuildManager, workspace string,
 			return "", fmt.Errorf("devcontainer has no image or build.dockerfile")
 		}
 		df := fmt.Sprintf("FROM %s\n", cfg.Image)
-		if err := bm.BuildImage(ctx, df, tag, container.BuildOptions{NoCache: opts.NoCache}); err != nil {
+		err = bm.BuildImage(ctx, df, tag, container.BuildOptions{NoCache: opts.NoCache})
+		if err != nil {
 			return "", fmt.Errorf("staging %s: %w", cfg.Image, err)
 		}
 		if len(cfg.ContainerEnv) > 0 {
 			overlay := envOverlayDockerfile(tag, cfg.ContainerEnv)
-			if err := bm.BuildImage(ctx, overlay, tag, container.BuildOptions{NoCache: opts.NoCache}); err != nil {
+			err = bm.BuildImage(ctx, overlay, tag, container.BuildOptions{NoCache: opts.NoCache})
+			if err != nil {
 				return "", fmt.Errorf("baking containerEnv: %w", err)
 			}
 		}
