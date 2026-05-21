@@ -2906,6 +2906,7 @@ region = %s
 		CapAdd:       capAdd,
 		GroupAdd:     groupAdd,
 		Privileged:   privileged,
+		Init:         true, // tini as PID 1: reaps zombies and forwards signals. See container.Config.Init.
 		Interactive:  opts.Interactive,
 		HasMoatUser:  needsCustomImage, // moat-built images have moatuser; base images don't
 		MemoryMB:     memoryMB,

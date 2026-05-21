@@ -202,6 +202,13 @@ func (r *AppleRuntime) CreateContainer(ctx context.Context, cfg Config) (string,
 func (r *AppleRuntime) buildCreateArgs(cfg Config) ([]string, error) {
 	args := []string{"create"}
 
+	// Init process: tini-style PID 1 that reaps zombies and forwards signals.
+	// Apple's container CLI documents --init as: "Run an init process inside the
+	// container that forwards signals and reaps processes."
+	if cfg.Init {
+		args = append(args, "--init")
+	}
+
 	// Interactive mode flags
 	// Apple's container CLI requires a real PTY when using -t (TTY) flag.
 	// We only add -t if os.Stdin is an actual terminal. This allows programmatic
