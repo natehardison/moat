@@ -65,16 +65,6 @@ func GetAgent(name string) AgentProvider {
 	return nil
 }
 
-// GetEndpoint returns an EndpointProvider by name.
-// Returns nil if not found or not an endpoint provider.
-func GetEndpoint(name string) EndpointProvider {
-	p := Get(name)
-	if ep, ok := p.(EndpointProvider); ok {
-		return ep
-	}
-	return nil
-}
-
 // All returns all registered providers.
 func All() []CredentialProvider {
 	mu.RLock()

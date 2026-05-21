@@ -1163,6 +1163,89 @@ claude:
 | `source` | Source type (`github`) |
 | `repo` | Repository path (`owner/repo`) |
 
+### claude.env
+
+Arbitrary environment variables merged into the container's `~/.claude/settings.json` `env` block. Claude Code reads this block and exports the variables before running any tool.
+
+```yaml
+claude:
+  env:
+    DISABLE_AUTOUPDATER: "1"
+    DISABLE_TELEMETRY: "1"
+    AWS_REGION: us-west-2
+```
+
+- Type: `map[string]string`
+- Default: `{}`
+
+Precedence (per key, highest wins):
+
+1. Moat-injected Bedrock core vars (`CLAUDE_CODE_USE_BEDROCK`, model IDs) — when `claude.bedrock.enabled: true`
+2. `claude.env` in `moat.yaml`
+3. Project `.claude/settings.json` `env` block
+4. `~/.moat/claude/settings.json` `env` block
+5. Host `~/.claude/settings.json` `env` block (lowest, but still honored)
+
+The merged result is written into the container's `~/.claude/settings.json` at run start. Values must be strings.
+
+### claude.bedrock
+
+Route Claude Code through AWS Bedrock instead of the Anthropic API. Requires the `aws` grant; mutually exclusive with `claude.base_url` and `claude.llm-gateway`.
+
+```yaml
+grants:
+  - aws
+
+claude:
+  bedrock:
+    enabled: true
+    region: us-east-1       # optional; see region resolution below
+    models:
+      haiku: global.anthropic.claude-haiku-4-5-20251001-v1:0
+      sonnet: global.anthropic.claude-sonnet-4-6[1m]
+      opus: global.anthropic.claude-opus-4-6-v1[1m]
+      custom: global.anthropic.claude-opus-4-7[1m]
+```
+
+- Type: `object`
+- Default: none (disabled)
+
+#### claude.bedrock fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Enable Bedrock mode |
+| `region` | `string` | See below | AWS region for Bedrock API calls |
+| `models.haiku` | `string` | Built-in default | Bedrock model ID for Haiku |
+| `models.sonnet` | `string` | Built-in default | Bedrock model ID for Sonnet |
+| `models.opus` | `string` | Built-in default | Bedrock model ID for Opus |
+| `models.custom` | `string` | Built-in default | Bedrock model ID for the custom model slot |
+
+#### Region resolution
+
+Effective region, highest wins:
+
+1. `claude.bedrock.region`
+2. `AWS_REGION` from the merged settings env (see `claude.env` precedence)
+3. Region stored with the `aws` grant
+4. `us-east-1` (default)
+
+The resolved region is set as `AWS_REGION` in the container and used to build the Bedrock API endpoint. When `network.policy: strict`, moat automatically adds `bedrock-runtime.<region>.amazonaws.com` and `bedrock.<region>.amazonaws.com` to the allowed host list.
+
+#### Credential delivery
+
+Moat writes Claude Code's `awsCredentialExport` setting to invoke `/moat/aws/credentials --claude` inside the container. This helper fetches short-lived STS credentials from moat's AWS credential endpoint (server-side `AssumeRole` with caching) and returns them in the `{"Credentials":{...}}` envelope Claude Code expects. Claude Code re-invokes the helper every 5 minutes (`CLAUDE_CODE_API_KEY_HELPER_TTL_MS=300000`). No long-lived credentials are written to the container.
+
+When `bedrock.enabled` is true, moat overrides any `awsCredentialExport` value from the host `~/.claude/settings.json` and removes `awsAuthRefresh` (a host-side SSO flow that would fail inside the container).
+
+#### Constraints
+
+- Requires `aws` in `grants` — returns an error otherwise.
+- Mutually exclusive with `claude.base_url` and `claude.llm-gateway`. Both set `ANTHROPIC_BASE_URL`, which conflicts with Bedrock authentication.
+- If an `anthropic` or `claude` grant is also present, moat suppresses `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` injection to avoid conflicting with `CLAUDE_CODE_USE_BEDROCK=1`.
+
+**See also:** [Claude on AWS Bedrock](../guides/14-claude-bedrock.md#how-credentials-flow)
+
 ### claude.mcp
 
 Sandbox-local MCP servers that run as child processes inside the container. Configuration is written to `.claude.json` with `type: stdio`.

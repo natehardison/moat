@@ -2,19 +2,16 @@ package aws
 
 import (
 	"context"
-	"net/http"
 
 	"github.com/majorcontext/moat/internal/provider"
 )
 
-// Provider implements provider.CredentialProvider and provider.EndpointProvider
-// for AWS credentials via STS AssumeRole.
+// Provider implements provider.CredentialProvider for AWS credentials.
 type Provider struct{}
 
 // Compile-time interface assertions.
 var (
 	_ provider.CredentialProvider = (*Provider)(nil)
-	_ provider.EndpointProvider   = (*Provider)(nil)
 )
 
 // New creates a new AWS provider.
@@ -31,13 +28,13 @@ func (p *Provider) Name() string {
 	return "aws"
 }
 
-// Grant acquires AWS credentials by prompting for an IAM role ARN.
+// Grant acquires AWS credentials in one of two modes (role-assumption or profile pass-through), selected by the inputs in the request context.
 func (p *Provider) Grant(ctx context.Context) (*provider.Credential, error) {
 	return grant(ctx)
 }
 
-// ConfigureProxy is a no-op for AWS since it uses the endpoint pattern.
-// AWS credentials are served via RegisterEndpoints, not header injection.
+// ConfigureProxy is a no-op for AWS; credentials are served via the
+// CredentialProvider endpoint, not header injection.
 func (p *Provider) ConfigureProxy(pc provider.ProxyConfigurer, cred *provider.Credential) {
 	// No-op: AWS uses credential endpoint, not proxy header injection
 }
@@ -62,11 +59,4 @@ func (p *Provider) Cleanup(cleanupPath string) {
 // ImpliedDependencies returns dependencies implied by AWS grant.
 func (p *Provider) ImpliedDependencies() []string {
 	return []string{"aws"}
-}
-
-// RegisterEndpoints registers the AWS credential endpoint handler.
-// The handler serves temporary credentials from STS AssumeRole.
-func (p *Provider) RegisterEndpoints(mux *http.ServeMux, cred *provider.Credential) {
-	handler := NewEndpointHandler(cred)
-	mux.Handle("/aws-credentials", handler)
 }

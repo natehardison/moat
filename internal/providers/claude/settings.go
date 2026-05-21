@@ -44,6 +44,11 @@ type Settings struct {
 	// Set to true for container runs since the container provides isolation.
 	SkipDangerousModePermissionPrompt bool `json:"skipDangerousModePermissionPrompt,omitempty"`
 
+	// Env is Claude Code's native settings.json "env" block. Merged across
+	// all sources (host ~/.claude/settings.json, moat-user, project,
+	// moat.yaml claude.env) — unlike RawExtras, host-source env survives.
+	Env map[string]string `json:"env,omitempty"`
+
 	// RawExtras holds unknown JSON fields from settings files.
 	// Only extras from the moat-user source (~/.moat/claude/settings.json)
 	// are preserved through merge and written to the container.
@@ -85,6 +90,7 @@ var knownSettingsKeys = map[string]bool{
 	"enabledPlugins":                    true,
 	"extraKnownMarketplaces":            true,
 	"skipDangerousModePermissionPrompt": true,
+	"env":                               true,
 }
 
 // UnmarshalJSON implements custom unmarshaling to capture unknown fields in RawExtras.
@@ -128,6 +134,9 @@ func (s Settings) MarshalJSON() ([]byte, error) {
 	}
 	if s.SkipDangerousModePermissionPrompt {
 		m["skipDangerousModePermissionPrompt"] = true
+	}
+	if len(s.Env) > 0 {
+		m["env"] = s.Env
 	}
 
 	// Emit extras — keys matching known struct fields are skipped (they're already serialized above).
@@ -294,6 +303,7 @@ func MergeSettings(base, override *Settings, overrideSource SettingSource) *Sett
 			EnabledPlugins:                    cloneMapStringBool(override.EnabledPlugins),
 			ExtraKnownMarketplaces:            cloneMapStringMarketplace(override.ExtraKnownMarketplaces),
 			SkipDangerousModePermissionPrompt: override.SkipDangerousModePermissionPrompt,
+			Env:                               cloneMapStringString(override.Env),
 			PluginSources:                     make(map[string]SettingSource),
 			MarketplaceSources:                make(map[string]SettingSource),
 		}
@@ -358,6 +368,22 @@ func MergeSettings(base, override *Settings, overrideSource SettingSource) *Sett
 	for k, v := range override.ExtraKnownMarketplaces {
 		result.ExtraKnownMarketplaces[k] = v
 		result.MarketplaceSources[k] = overrideSource
+	}
+
+	// Merge env: union all sources, override wins per key (precedence is
+	// established by LoadAllSettings call order). Unlike EnabledPlugins and
+	// ExtraKnownMarketplaces (which are unconditionally make()-d in the result
+	// literal because they have companion *Sources maps), Env is left nil when
+	// both sides are empty — nil maps are range-safe and omitempty suppresses
+	// "env":{} in JSON output; do not move Env into the result struct literal.
+	if len(base.Env) > 0 || len(override.Env) > 0 {
+		result.Env = make(map[string]string, len(base.Env)+len(override.Env))
+		for k, v := range base.Env {
+			result.Env[k] = v
+		}
+		for k, v := range override.Env {
+			result.Env[k] = v
+		}
 	}
 
 	// Propagate RawExtras only from the moat-user source.
@@ -497,6 +523,13 @@ func ConfigToSettings(cfg *config.Config) *Settings {
 		}
 	}
 
+	if len(cfg.Claude.Env) > 0 {
+		settings.Env = make(map[string]string, len(cfg.Claude.Env))
+		for k, v := range cfg.Claude.Env {
+			settings.Env[k] = v
+		}
+	}
+
 	return settings
 }
 
@@ -555,6 +588,18 @@ func cloneMapStringMarketplace(m map[string]MarketplaceEntry) map[string]Marketp
 		return nil
 	}
 	out := make(map[string]MarketplaceEntry, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneMapStringString returns a shallow copy of the map (nil-safe).
+func cloneMapStringString(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
 	for k, v := range m {
 		out[k] = v
 	}

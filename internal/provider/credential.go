@@ -34,6 +34,11 @@ type PrepareOpts struct {
 	// container. These are defined under agent-specific sections in moat.yaml
 	// (e.g., claude.mcp, codex.mcp, gemini.mcp).
 	LocalMCPServers map[string]LocalMCPServerConfig
+
+	// Bedrock indicates Claude→AWS-Bedrock mode: the agent provider must NOT
+	// emit ANTHROPIC_API_KEY / base-URL relay env (would conflict with
+	// CLAUDE_CODE_USE_BEDROCK).
+	Bedrock bool
 }
 
 // MCPServerConfig defines a remote/relay MCP server configuration.

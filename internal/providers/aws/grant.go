@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/majorcontext/moat/internal/provider"
-	"github.com/majorcontext/moat/internal/provider/util"
 	"github.com/majorcontext/moat/internal/ui"
 )
 
@@ -22,6 +21,10 @@ const (
 	MetaKeySessionDuration = "session_duration"
 	MetaKeyExternalID      = "external_id"
 	MetaKeyProfile         = "profile"
+	// MetaKeySource selects the credential acquisition path:
+	//   "role"    (default): moat calls sts:AssumeRole on the stored RoleARN.
+	//   "profile" (new):     moat serves the named profile's resolved creds directly.
+	MetaKeySource = "source"
 )
 
 // Default values.
@@ -42,7 +45,7 @@ const (
 )
 
 // WithGrantOptions returns a context with AWS grant options set.
-// These options are used by Grant() instead of prompting interactively.
+// These options are used by Grant() to determine which credential acquisition mode to use.
 func WithGrantOptions(ctx context.Context, role, region, sessionDuration, externalID, profile string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyRole, role)
 	ctx = context.WithValue(ctx, ctxKeyRegion, region)
@@ -59,31 +62,58 @@ type Config struct {
 	SessionDuration time.Duration
 	ExternalID      string
 	Profile         string // AWS shared config profile (AWS_PROFILE) used to assume the role
+	Source          string // "role" (default, AssumeRole) | "profile" (serve profile creds directly, no AssumeRole)
 }
 
-// grant acquires AWS credentials by prompting for an IAM role ARN.
+// grant acquires AWS credentials in one of two modes:
+//   - role mode: assumes the given IAM role via sts:AssumeRole.
+//   - profile mode: serves the named AWS profile's resolved credentials directly.
 func grant(ctx context.Context) (*provider.Credential, error) {
 	var roleARN string
-	var err error
-
-	// Check for role ARN in context (from CLI flags)
 	if v, ok := ctx.Value(ctxKeyRole).(string); ok && v != "" {
 		roleARN = v
 	}
 
-	// Prompt if not provided via context
-	if roleARN == "" {
-		roleARN, err = util.PromptForToken("Enter IAM role ARN")
-		if err != nil {
-			return nil, &provider.GrantError{
-				Provider: "aws",
-				Cause:    err,
-				Hint:     "The role ARN should be in format: arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME",
-			}
-		}
+	var awsProfile string
+	if v, ok := ctx.Value(ctxKeyProfile).(string); ok && v != "" {
+		awsProfile = v
+	} else if v := os.Getenv("AWS_PROFILE"); v != "" {
+		awsProfile = v
+		ui.Infof("Using AWS profile from AWS_PROFILE: %s (stored with credential)", v)
 	}
 
-	// Parse and validate ARN
+	var region, sessionDurationStr, externalID string
+	if v, ok := ctx.Value(ctxKeyRegion).(string); ok && v != "" {
+		region = v
+	}
+	if v, ok := ctx.Value(ctxKeySessionDuration).(string); ok && v != "" {
+		sessionDurationStr = v
+	}
+	if v, ok := ctx.Value(ctxKeyExternalID).(string); ok && v != "" {
+		externalID = v
+	}
+
+	// Choose source mode from inputs.
+	switch {
+	case roleARN != "":
+		return grantRoleMode(ctx, roleARN, region, sessionDurationStr, externalID, awsProfile)
+	case awsProfile != "":
+		return grantProfileMode(ctx, awsProfile, region)
+	default:
+		return nil, &provider.GrantError{
+			Provider: "aws",
+			Cause: fmt.Errorf("moat grant aws requires either a role ARN to assume " +
+				"or --aws-profile <name> for a profile whose credentials moat should serve directly"),
+			Hint: "Examples:\n" +
+				"  moat grant aws --role=arn:aws:iam::123456789012:role/MyRole\n" +
+				"  moat grant aws --aws-profile=corp-broker\n" +
+				"Run 'moat grant aws --help' for the full flag list.",
+		}
+	}
+}
+
+// grantRoleMode assumes the given IAM role via sts:AssumeRole and stores the role ARN as the credential token.
+func grantRoleMode(ctx context.Context, roleARN, region, sessionDurationStr, externalID, awsProfile string) (*provider.Credential, error) {
 	cfg, err := ParseRoleARN(roleARN)
 	if err != nil {
 		return nil, &provider.GrantError{
@@ -92,31 +122,20 @@ func grant(ctx context.Context) (*provider.Credential, error) {
 			Hint:     "Example: arn:aws:iam::123456789012:role/MyRole",
 		}
 	}
-
-	// Apply overrides from context
-	if v, ok := ctx.Value(ctxKeyRegion).(string); ok && v != "" {
-		cfg.Region = v
+	cfg.Source = "role"
+	if region != "" {
+		cfg.Region = region
 	}
-	if v, ok := ctx.Value(ctxKeySessionDuration).(string); ok && v != "" {
-		if d, parseErr := time.ParseDuration(v); parseErr == nil {
+	if sessionDurationStr != "" {
+		if d, parseErr := time.ParseDuration(sessionDurationStr); parseErr == nil {
 			cfg.SessionDuration = d
 		}
 	}
-	if v, ok := ctx.Value(ctxKeyExternalID).(string); ok && v != "" {
-		cfg.ExternalID = v
+	if externalID != "" {
+		cfg.ExternalID = externalID
 	}
+	cfg.Profile = awsProfile
 
-	// Capture AWS profile: explicit flag takes precedence, then AWS_PROFILE env var.
-	// This is stored with the credential so the proxy daemon can assume the role
-	// using the correct source identity regardless of its own environment.
-	if v, ok := ctx.Value(ctxKeyProfile).(string); ok && v != "" {
-		cfg.Profile = v
-	} else if v := os.Getenv("AWS_PROFILE"); v != "" {
-		cfg.Profile = v
-		ui.Infof("Using AWS profile from AWS_PROFILE: %s (stored with credential)", v)
-	}
-
-	// Test AssumeRole to verify the role is accessible
 	if err := testAssumeRole(ctx, cfg); err != nil {
 		return nil, &provider.GrantError{
 			Provider: "aws",
@@ -126,25 +145,92 @@ func grant(ctx context.Context) (*provider.Credential, error) {
 		}
 	}
 
-	// Build credential with role ARN as token and config as metadata
 	cred := &provider.Credential{
 		Provider:  "aws",
 		Token:     cfg.RoleARN,
 		CreatedAt: time.Now(),
 		Metadata: map[string]string{
+			MetaKeySource:          "role",
 			MetaKeyRegion:          cfg.Region,
 			MetaKeySessionDuration: cfg.SessionDuration.String(),
 		},
 	}
-
 	if cfg.Profile != "" {
 		cred.Metadata[MetaKeyProfile] = cfg.Profile
 	}
 	if cfg.ExternalID != "" {
 		cred.Metadata[MetaKeyExternalID] = cfg.ExternalID
 	}
-
 	return cred, nil
+}
+
+// grantProfileMode is the new pass-through path: serve the named profile's
+// resolved credentials directly. No AssumeRole.
+func grantProfileMode(ctx context.Context, awsProfile, region string) (*provider.Credential, error) {
+	resolvedRegion := DefaultRegion
+	if region != "" {
+		resolvedRegion = region
+	}
+
+	if err := validateProfileForGrant(ctx, awsProfile, resolvedRegion); err != nil {
+		return nil, &provider.GrantError{
+			Provider: "aws",
+			Cause:    err,
+			Hint: fmt.Sprintf("The profile %q must resolve to usable AWS credentials.\n"+
+				"Verify with: aws --profile %s sts get-caller-identity\n"+
+				"If the profile uses credential_process, ensure its command is on PATH.",
+				awsProfile, awsProfile),
+		}
+	}
+
+	cred := &provider.Credential{
+		Provider:  "aws",
+		Token:     "", // intentionally empty: no role to assume
+		CreatedAt: time.Now(),
+		Metadata: map[string]string{
+			MetaKeySource:  "profile",
+			MetaKeyProfile: awsProfile,
+			MetaKeyRegion:  resolvedRegion,
+		},
+	}
+	return cred, nil
+}
+
+// validateProfileForGrant verifies the named profile resolves to non-empty
+// credentials. It is a package-level var so tests can short-circuit it.
+//
+// Behavior:
+//  1. Load the profile via LoadDefaultConfig(WithSharedConfigProfile).
+//  2. Call Credentials.Retrieve(ctx) — must succeed and return a non-empty
+//     AccessKeyID. Any error is surfaced (almost always actionable).
+//  3. Best-effort sts:GetCallerIdentity to echo the identity in the success
+//     log. Failure is NOT fatal: some environments block GetCallerIdentity
+//     via SCPs but Bedrock still works.
+var validateProfileForGrant = func(ctx context.Context, awsProfile, region string) error {
+	awsCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(region),
+		config.WithSharedConfigProfile(awsProfile),
+	)
+	if err != nil {
+		return fmt.Errorf("loading profile %q: %w", awsProfile, err)
+	}
+	creds, err := awsCfg.Credentials.Retrieve(ctx)
+	if err != nil {
+		return fmt.Errorf("retrieving credentials from profile %q: %w", awsProfile, err)
+	}
+	if creds.AccessKeyID == "" {
+		return fmt.Errorf("profile %q resolved to empty credentials", awsProfile)
+	}
+
+	// Best-effort identity echo.
+	stsClient := sts.NewFromConfig(awsCfg)
+	out, idErr := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if idErr != nil {
+		ui.Infof("Bound to profile %q (identity unavailable: GetCallerIdentity denied)", awsProfile)
+	} else if out != nil && out.Arn != nil {
+		ui.Infof("Bound to identity %s (profile %q)", *out.Arn, awsProfile)
+	}
+	return nil
 }
 
 // ParseRoleARN validates an IAM role ARN and returns a Config.
@@ -262,6 +348,31 @@ func ConfigFromCredential(cred *provider.Credential) (*Config, error) {
 		if profile := cred.Metadata[MetaKeyProfile]; profile != "" {
 			cfg.Profile = profile
 		}
+		if s := cred.Metadata[MetaKeySource]; s != "" {
+			cfg.Source = s
+		}
+	}
+
+	// Resolve source mode (defaults to "role" for backward compatibility with
+	// credentials stored before this field existed).
+	if cfg.Source == "" {
+		cfg.Source = "role"
+	}
+
+	switch cfg.Source {
+	case "role":
+		if cfg.RoleARN == "" {
+			return nil, fmt.Errorf("source=role requires a role ARN")
+		}
+	case "profile":
+		if cfg.RoleARN != "" {
+			return nil, fmt.Errorf("source=profile must not carry a role ARN (credential Token must be empty)")
+		}
+		if cfg.Profile == "" {
+			return nil, fmt.Errorf("source=profile requires the \"profile\" metadata key")
+		}
+	default:
+		return nil, fmt.Errorf("unknown source %q (expected \"role\" or \"profile\")", cfg.Source)
 	}
 
 	// Fallback to legacy Scopes format: [region, sessionDuration, externalID]

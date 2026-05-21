@@ -726,42 +726,58 @@ moat grant ssh --host gitlab.com
 
 ### moat grant aws
 
-Grant AWS credentials via IAM role assumption.
+Grant AWS credentials. `moat grant aws` supports two invocation forms depending on whether your environment can call `sts:AssumeRole`.
+
+**Role mode** (default) — moat stores the role ARN and calls `sts:AssumeRole` each time credentials are needed:
 
 ```
 moat grant aws --role=<ARN> [flags]
 ```
 
+**Profile mode** — moat stores the profile name and serves the profile's resolved credentials directly, without calling `sts:AssumeRole`. Use this when your environment issues role-scoped credentials via a `credential_process` broker and `sts:AssumeRole` is not available:
+
+```
+moat grant aws --aws-profile=<name> [flags]
+```
+
+Invoking `moat grant aws` without either `--role` or `--aws-profile` is an error.
+
 ### Flags
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--role ARN` | IAM role ARN to assume (required) | -- |
+| `--role ARN` | IAM role ARN to assume (role mode; required unless --aws-profile is given) | -- |
+| `--aws-profile PROFILE` | AWS shared config profile: profile mode (no `--role`) or source profile in role mode (falls back to `AWS_PROFILE` env var) | -- |
 | `--region REGION` | AWS region for API calls | `us-east-1` |
-| `--session-duration DURATION` | Session duration (e.g., `1h`, `30m`, `15m`) | `15m` |
-| `--external-id ID` | External ID for cross-account role assumption | -- |
-| `--aws-profile PROFILE` | AWS shared config profile for role assumption (falls back to `AWS_PROFILE` env var) | -- |
+| `--session-duration DURATION` | Session duration (e.g., `1h`, `30m`, `15m`); role mode only | `15m` |
+| `--external-id ID` | External ID for cross-account role assumption; role mode only | -- |
+
+### Security trade-offs
+
+In **role mode**, CloudTrail entries are attributed to the assumed-role session with a `moat-<…>` session-name discriminator, allowing per-run attribution. Revoking access means deleting the stored grant or restricting the role's trust policy.
+
+In **profile mode**, CloudTrail entries are attributed to the profile's own identity with no `moat-<…>` session-name discriminator. Revocation moves to the upstream broker that issues the profile's credentials.
 
 ### Examples
 
 ```bash
-# Basic role assumption
+# Role mode: store a role ARN; moat calls sts:AssumeRole each time creds are needed
 moat grant aws --role arn:aws:iam::123456789012:role/AgentRole
 
-# With explicit region
-moat grant aws --role arn:aws:iam::123456789012:role/AgentRole --region us-west-2
-
-# With custom session duration
-moat grant aws --role arn:aws:iam::123456789012:role/AgentRole --session-duration 2h
-
-# Cross-account with external ID
-moat grant aws --role arn:aws:iam::987654321098:role/CrossAccountRole --external-id abc123
-
-# Full example
+# Role mode with explicit region and session duration
 moat grant aws \
     --role arn:aws:iam::123456789012:role/AgentRole \
     --region eu-west-1 \
     --session-duration 30m
+
+# Role mode with cross-account external ID
+moat grant aws --role arn:aws:iam::987654321098:role/CrossAccountRole --external-id abc123
+
+# Profile mode: serve the named profile's resolved credentials directly (no AssumeRole)
+moat grant aws --aws-profile corp-broker
+
+# Profile mode with explicit region
+moat grant aws --aws-profile corp-broker --region us-west-2
 ```
 
 ### moat grant list
