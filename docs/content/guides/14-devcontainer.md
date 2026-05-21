@@ -67,10 +67,11 @@ On first `moat run`:
 
 On subsequent starts (after stop):
 
-1. `initializeCommand` (host, every run)
-2. `postStartCommand` (container)
-3. `hooks.pre_run` (container)
-4. Agent process
+1. `postStartCommand` (container)
+2. `hooks.pre_run` (container)
+3. Agent process
+
+Note: a fresh `moat run` always creates a new container and runs the full lifecycle (including `initializeCommand`). Restarts via `moat start` reuse an existing container and skip the create-time hooks.
 
 `onCreateCommand` and `postCreateCommand` are one-shot: they run once on first creation and are not re-run on restart.
 
