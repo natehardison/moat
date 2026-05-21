@@ -13,6 +13,98 @@ import (
 	"github.com/majorcontext/moat/internal/devcontainer"
 )
 
+// TestMergeDevcontainerMounts verifies that a colliding mount target is
+// replaced (not duplicated) and that non-colliding mounts are preserved.
+func TestMergeDevcontainerMounts(t *testing.T) {
+	base := []container.MountConfig{
+		{Source: "/workspace/original", Target: "/workspaces/repo", ReadOnly: false},
+		{Source: "/other/source", Target: "/other/target", ReadOnly: true},
+	}
+	additions := []devcontainer.Mount{
+		// This collides with the first base mount.
+		{Source: "/host/override", Target: "/workspaces/repo", Type: "bind", ReadOnly: true},
+	}
+
+	result := mergeDevcontainerMounts(base, additions)
+
+	// Expect exactly two mounts (collision replaced, not duplicated).
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2; mounts: %+v", len(result), result)
+	}
+
+	// Verify the colliding target now has the devcontainer's source.
+	var found bool
+	for _, m := range result {
+		if m.Target == "/workspaces/repo" {
+			found = true
+			if m.Source != "/host/override" {
+				t.Errorf("mount Source = %q, want /host/override", m.Source)
+			}
+			if !m.ReadOnly {
+				t.Errorf("mount ReadOnly = false, want true")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no mount with target /workspaces/repo in result: %+v", result)
+	}
+
+	// Verify the non-colliding mount is still present.
+	var otherFound bool
+	for _, m := range result {
+		if m.Target == "/other/target" {
+			otherFound = true
+			if m.Source != "/other/source" {
+				t.Errorf("other mount Source = %q, want /other/source", m.Source)
+			}
+		}
+	}
+	if !otherFound {
+		t.Errorf("non-colliding mount /other/target missing from result: %+v", result)
+	}
+}
+
+// TestMergeDevcontainerMounts_NoCollision verifies that when there are no
+// target collisions all mounts (base + additions) appear in the result.
+func TestMergeDevcontainerMounts_NoCollision(t *testing.T) {
+	base := []container.MountConfig{
+		{Source: "/src/a", Target: "/a", ReadOnly: false},
+	}
+	additions := []devcontainer.Mount{
+		{Source: "/src/b", Target: "/b", Type: "bind", ReadOnly: false},
+	}
+
+	result := mergeDevcontainerMounts(base, additions)
+
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2; mounts: %+v", len(result), result)
+	}
+}
+
+// TestMergeDevcontainerMounts_Empty verifies edge cases with empty inputs.
+func TestMergeDevcontainerMounts_Empty(t *testing.T) {
+	base := []container.MountConfig{
+		{Source: "/src/a", Target: "/a", ReadOnly: false},
+	}
+
+	// No additions — should return base unchanged.
+	result := mergeDevcontainerMounts(base, nil)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+
+	// No base — additions become the full list.
+	result2 := mergeDevcontainerMounts(nil, []devcontainer.Mount{
+		{Source: "/src/b", Target: "/b", Type: "bind"},
+	})
+	if len(result2) != 1 {
+		t.Fatalf("len(result2) = %d, want 1", len(result2))
+	}
+	if result2[0].Target != "/b" {
+		t.Errorf("result2[0].Target = %q, want /b", result2[0].Target)
+	}
+}
+
 // fakeBuildManager is a minimal container.BuildManager for testing devcontainer builds.
 // It records calls to BuildImage and tracks which images "exist".
 type fakeBuildManager struct {

@@ -1875,23 +1875,9 @@ region = %s
 	useDC := activeDCCfg != nil
 
 	// Apply devcontainer extra mounts from the devcontainer.json `mounts:` field.
-	// These are appended after moat.yaml mounts; if a target collides, log a warning.
+	// Colliding targets are replaced (devcontainer entry takes precedence).
 	if useDC {
-		for _, dcMount := range activeDCCfg.Mounts {
-			// Check for collision with an existing mount target and log a warning.
-			for _, existing := range mounts {
-				if existing.Target == dcMount.Target {
-					log.Warn("devcontainer mount target collides with existing mount; devcontainer entry takes precedence",
-						"target", dcMount.Target)
-					break
-				}
-			}
-			mounts = append(mounts, container.MountConfig{
-				Source:   dcMount.Source,
-				Target:   dcMount.Target,
-				ReadOnly: dcMount.ReadOnly,
-			})
-		}
+		mounts = mergeDevcontainerMounts(mounts, activeDCCfg.Mounts)
 	}
 
 	// Fill in the fields that depend on runtime context built above.
@@ -4609,4 +4595,38 @@ func hasGrant(grants []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// mergeDevcontainerMounts merges devcontainer mounts into an existing mount
+// list. When a devcontainer mount target collides with an existing entry, the
+// existing entry is removed and replaced by the devcontainer's mount. This
+// prevents Docker from rejecting the run with "Duplicate mount point".
+func mergeDevcontainerMounts(base []container.MountConfig, additions []devcontainer.Mount) []container.MountConfig {
+	if len(additions) == 0 {
+		return base
+	}
+	// Build a set of targets declared by devcontainer additions.
+	replacing := make(map[string]bool, len(additions))
+	for _, a := range additions {
+		replacing[a.Target] = true
+	}
+	// Keep existing mounts whose targets are not overridden.
+	out := base[:0]
+	for _, b := range base {
+		if replacing[b.Target] {
+			log.Warn("devcontainer mount target collides with existing mount; devcontainer entry takes precedence",
+				"target", b.Target)
+			continue
+		}
+		out = append(out, b)
+	}
+	// Append the devcontainer mounts.
+	for _, a := range additions {
+		out = append(out, container.MountConfig{
+			Source:   a.Source,
+			Target:   a.Target,
+			ReadOnly: a.ReadOnly,
+		})
+	}
+	return out
 }
