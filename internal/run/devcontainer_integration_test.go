@@ -15,6 +15,17 @@ import (
 	"github.com/majorcontext/moat/internal/devcontainer"
 )
 
+// trackingRuntime wraps fakeRuntimeWithBuild and records RemoveImage calls.
+type trackingRuntime struct {
+	fakeRuntimeWithBuild
+	removed []string // tags passed to RemoveImage
+}
+
+func (t *trackingRuntime) RemoveImage(_ context.Context, tag string) error {
+	t.removed = append(t.removed, tag)
+	return nil
+}
+
 // TestMergeDevcontainerMounts verifies that a colliding mount target is
 // replaced (not duplicated) and that non-colliding mounts are preserved.
 func TestMergeDevcontainerMounts(t *testing.T) {
@@ -572,5 +583,70 @@ func TestRunDevcontainerLifecycleHooks_OnCreatePostCreateAreOneShot(t *testing.T
 	wantSecond := []string{"postStart"}
 	if !reflect.DeepEqual(calls, wantSecond) {
 		t.Errorf("second call = %v, want %v (only postStart should fire)", calls, wantSecond)
+	}
+}
+
+// TestManager_RebuildRemovesStageATag verifies that resolveImageSpecForDevcontainer
+// removes the Stage A image tag when opts.Rebuild is true and a devcontainer is present.
+func TestManager_RebuildRemovesStageATag(t *testing.T) {
+	workspace := t.TempDir()
+	dcDir := filepath.Join(workspace, ".devcontainer")
+	if err := os.MkdirAll(dcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(`{"image":"ubuntu:24.04"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bm := newFakeBuildManager()
+	rt := &trackingRuntime{
+		fakeRuntimeWithBuild: fakeRuntimeWithBuild{bm: bm},
+	}
+	m := newEdgeCaseManager(t, rt)
+
+	_, _, _, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
+		Workspace: workspace,
+		Rebuild:   true,
+		Config:    nil,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// Expect exactly one RemoveImage call targeting the Stage A tag.
+	if len(rt.removed) == 0 {
+		t.Fatal("expected RemoveImage to be called for Stage A tag, but it was not")
+	}
+	tag := rt.removed[0]
+	if !strings.HasPrefix(tag, "moat-devcontainer-") {
+		t.Errorf("removed tag %q should have prefix moat-devcontainer-", tag)
+	}
+	if !strings.Contains(tag, ":base-") {
+		t.Errorf("removed tag %q should contain ':base-'", tag)
+	}
+}
+
+// TestManager_RebuildSkipsStageARemovalWhenNoDevcontainer verifies that
+// RemoveImage is NOT called when no devcontainer is present (useDC=false).
+func TestManager_RebuildSkipsStageARemovalWhenNoDevcontainer(t *testing.T) {
+	workspace := t.TempDir() // no devcontainer.json
+
+	bm := newFakeBuildManager()
+	rt := &trackingRuntime{
+		fakeRuntimeWithBuild: fakeRuntimeWithBuild{bm: bm},
+	}
+	m := newEdgeCaseManager(t, rt)
+
+	_, _, _, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
+		Workspace: workspace,
+		Rebuild:   true,
+		Config:    nil,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	if len(rt.removed) != 0 {
+		t.Errorf("expected no RemoveImage calls (no devcontainer), but got: %v", rt.removed)
 	}
 }

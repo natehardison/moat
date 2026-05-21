@@ -602,6 +602,20 @@ func (m *Manager) resolveImageSpecForDevcontainer(ctx context.Context, opts Opti
 
 	spec := &deps.ImageSpec{}
 
+	// When --rebuild is requested and the devcontainer is active, remove the
+	// cached Stage A image (moat-devcontainer-<name>:base-<hash>) so that
+	// BuildBase runs a fresh build even though the tag still exists on disk.
+	// The subsequent BuildBase call passes NoCache: opts.Rebuild which ensures
+	// Docker/Apple also bypasses layer cache.
+	if opts.Rebuild && useDC {
+		if hash, hashErr := devcontainer.ContentHash(opts.Workspace); hashErr == nil {
+			baseTag := fmt.Sprintf("moat-devcontainer-%s:base-%s", filepath.Base(opts.Workspace), hash[:12])
+			if removeErr := m.defaultRuntime().RemoveImage(ctx, baseTag); removeErr != nil {
+				log.Debug("could not remove Stage A tag for rebuild", "tag", baseTag, "error", removeErr)
+			}
+		}
+	}
+
 	var dcBaseTag string
 	if useDC {
 		// Stage A: run initializeCommand, build base image, bake containerEnv overlay.
