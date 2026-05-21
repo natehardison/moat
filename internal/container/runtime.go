@@ -398,4 +398,10 @@ type BuildOptions struct {
 
 	// NoCache disables build cache, forcing a fresh build of all layers.
 	NoCache bool
+
+	// Target sets the build target stage (--target). Empty means build all stages.
+	Target string
+
+	// BuildArgs are build-time variables passed as --build-arg KEY=VALUE.
+	BuildArgs map[string]string
 }

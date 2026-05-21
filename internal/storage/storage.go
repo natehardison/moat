@@ -50,6 +50,16 @@ type Metadata struct {
 	// BuildKit sidecar fields (docker:dind only)
 	BuildkitContainerID string `json:"buildkit_container_id,omitempty"`
 	NetworkID           string `json:"network_id,omitempty"`
+
+	// Devcontainer lifecycle hook fields. Persisted so that restarts can
+	// re-run postStartCommand and surface devcontainer drift hints.
+	DevcontainerHash string `json:"devcontainerHash,omitempty"`
+	OnCreateCmd      string `json:"onCreateCmd,omitempty"`
+	PostCreateCmd    string `json:"postCreateCmd,omitempty"`
+	PostStartCmd     string `json:"postStartCmd,omitempty"`
+	PostStartUser    string `json:"postStartUser,omitempty"`
+	PostStartHome    string `json:"postStartHome,omitempty"`
+	PostStartWorkdir string `json:"postStartWorkdir,omitempty"`
 }
 
 // RunStore manages storage for a single agent run.

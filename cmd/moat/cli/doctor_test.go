@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"text/tabwriter"
@@ -151,4 +153,55 @@ func TestPrintClaims(t *testing.T) {
 	}
 
 	t.Logf("\n=== JWT Claims Output ===\n%s", output)
+}
+
+func TestDoctor_DevcontainerSection(t *testing.T) {
+	workspace := t.TempDir()
+	dcDir := filepath.Join(workspace, ".devcontainer")
+	if err := os.MkdirAll(dcDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dcJSON := `{
+		"image": "ubuntu:24.04",
+		"remoteUser": "vscode",
+		"workspaceFolder": "/workspaces/myproject"
+	}`
+	if err := os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(dcJSON), 0o644); err != nil {
+		t.Fatalf("write devcontainer.json: %v", err)
+	}
+
+	section := &devcontainerSection{workspace: workspace}
+	var buf bytes.Buffer
+	if err := section.Print(&buf); err != nil {
+		t.Fatalf("Print: %v", err)
+	}
+	output := buf.String()
+
+	if !strings.Contains(output, "Devcontainer") {
+		t.Error("output missing 'Devcontainer'")
+	}
+	if !strings.Contains(output, "ubuntu:24.04") {
+		t.Error("output missing image name")
+	}
+	if !strings.Contains(output, "vscode") {
+		t.Error("output missing user")
+	}
+	if !strings.Contains(output, "/workspaces/myproject") {
+		t.Error("output missing workspaceFolder")
+	}
+
+	t.Logf("\n=== Devcontainer Doctor Output ===\n%s", output)
+}
+
+func TestDoctor_DevcontainerSection_NotPresent(t *testing.T) {
+	workspace := t.TempDir() // no devcontainer.json
+	section := &devcontainerSection{workspace: workspace}
+	var buf bytes.Buffer
+	if err := section.Print(&buf); err != nil {
+		t.Fatalf("Print: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "not present") {
+		t.Errorf("expected 'not present', got: %s", output)
+	}
 }

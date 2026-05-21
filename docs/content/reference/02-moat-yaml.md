@@ -427,6 +427,8 @@ The base image must be **Debian-based** (Debian, Ubuntu) because Moat uses `apt-
 
 When `base_image` is set, it overrides the automatic image selection from `dependencies`. Runtime dependencies are still installed on top of the custom base image.
 
+**Devcontainer precedence:** If a `.devcontainer/devcontainer.json` is present in the workspace, moat uses it as the source of truth for the image, user, `workspaceFolder`, environment, mounts, and lifecycle hooks — **unless** moat.yaml sets `base_image:` or `dependencies:`, in which case moat.yaml wins for the image and the devcontainer is ignored (a warning is printed at run time).
+
 ```yaml
 # Pre-built image with project tooling, plus TypeScript on top
 base_image: ghcr.io/myorg/my-project-deps:latest

@@ -9,6 +9,7 @@ import (
 
 	intcli "github.com/majorcontext/moat/internal/cli"
 	"github.com/majorcontext/moat/internal/config"
+	"github.com/majorcontext/moat/internal/devcontainer"
 	claudeprov "github.com/majorcontext/moat/internal/providers/claude"
 	codexprov "github.com/majorcontext/moat/internal/providers/codex"
 	geminiprov "github.com/majorcontext/moat/internal/providers/gemini"
@@ -86,6 +87,16 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
+// writeDevcontainerMinimalYAML writes a minimal moat.yaml for workspaces that
+// have a .devcontainer/devcontainer.json. The file omits base_image and
+// dependencies because the devcontainer provides the image.
+func writeDevcontainerMinimalYAML(workspace, agentName string) error {
+	const header = "# .devcontainer/devcontainer.json is used as the image source for moat.\n" +
+		"# Run `moat run --no-devcontainer` to bypass it.\n"
+	content := header + fmt.Sprintf("agent: %s\n", agentName)
+	return os.WriteFile(filepath.Join(workspace, "moat.yaml"), []byte(content), 0o644)
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
 	workspace := "."
 	if len(args) > 0 {
@@ -98,10 +109,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if moat.yaml already exists.
-	if _, err := os.Stat(filepath.Join(absPath, "moat.yaml")); err == nil {
+	_, statErr := os.Stat(filepath.Join(absPath, "moat.yaml"))
+	if statErr == nil {
 		return fmt.Errorf("moat.yaml already exists in %s\n\nTo regenerate, remove the existing file first.", absPath)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("checking for existing moat.yaml: %w", err)
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("checking for existing moat.yaml: %w", statErr)
 	}
 
 	// Auto-detect which agent has credentials.
@@ -115,6 +127,22 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	if agent == nil {
 		return fmt.Errorf("no AI agent credentials found\n\nRun one of the following to grant credentials:\n  moat grant claude     (Claude Code)\n  moat grant codex      (OpenAI Codex)\n  moat grant gemini     (Google Gemini)\n\nThen run 'moat init' again.")
+	}
+
+	// If a .devcontainer/devcontainer.json exists, write a minimal moat.yaml
+	// that defers to the devcontainer for image selection instead of running
+	// the AI agent to guess base_image and dependencies.
+	dc, err := devcontainer.Detect(absPath)
+	if err != nil {
+		return fmt.Errorf("detecting devcontainer: %w", err)
+	}
+	if dc != nil {
+		ui.Infof("Detected .devcontainer/devcontainer.json — writing minimal moat.yaml")
+		if err := writeDevcontainerMinimalYAML(absPath, agent.name); err != nil {
+			return fmt.Errorf("writing moat.yaml: %w", err)
+		}
+		ui.Infof("Wrote moat.yaml (image source: .devcontainer/devcontainer.json)")
+		return nil
 	}
 
 	prompt := quickstart.BuildPrompt(absPath) + "\nWrite the generated YAML directly to /workspace/moat.yaml.\n"

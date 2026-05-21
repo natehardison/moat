@@ -686,13 +686,13 @@ func validateConfig(cfg *Config) error {
 			}
 		}
 		if !hasAWS {
-			return nil, fmt.Errorf("claude.bedrock requires the \"aws\" grant — add 'aws' to grants and run 'moat grant aws <role-arn>'")
+			return fmt.Errorf("claude.bedrock requires the \"aws\" grant — add 'aws' to grants and run 'moat grant aws <role-arn>'")
 		}
 		if cfg.Claude.BaseURL != "" {
-			return nil, fmt.Errorf("claude.bedrock is mutually exclusive with base_url — Bedrock authenticates via AWS, base_url routes to an Anthropic-API proxy")
+			return fmt.Errorf("claude.bedrock is mutually exclusive with base_url — Bedrock authenticates via AWS, base_url routes to an Anthropic-API proxy")
 		}
 		if cfg.Claude.LLMGateway != nil {
-			return nil, fmt.Errorf("claude.bedrock is mutually exclusive with llm-gateway — Bedrock authenticates via AWS, llm-gateway routes to a local Keep sidecar")
+			return fmt.Errorf("claude.bedrock is mutually exclusive with llm-gateway — Bedrock authenticates via AWS, llm-gateway routes to a local Keep sidecar")
 		}
 	}
 
@@ -713,7 +713,7 @@ func validateConfig(cfg *Config) error {
 	// Validate Kiro MCP server specs
 	for name, spec := range cfg.Kiro.MCP {
 		if err := validateMCPServerSpec("kiro", name, spec); err != nil {
-			return nil, err
+			return err
 		}
 	}
 

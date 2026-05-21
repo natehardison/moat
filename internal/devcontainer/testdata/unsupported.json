@@ -1,0 +1,7 @@
+{
+  "image": "ubuntu:24.04",
+  "features": { "ghcr.io/devcontainers/features/node:1": {} },
+  "runArgs": ["--cap-add=NET_ADMIN"],
+  "forwardPorts": [3000],
+  "customizations": { "vscode": { "extensions": [] } }
+}

@@ -31,6 +31,7 @@ import (
 	"github.com/majorcontext/moat/internal/credential"
 	"github.com/majorcontext/moat/internal/daemon"
 	"github.com/majorcontext/moat/internal/deps"
+	"github.com/majorcontext/moat/internal/devcontainer"
 	"github.com/majorcontext/moat/internal/hostnames"
 	"github.com/majorcontext/moat/internal/id"
 	"github.com/majorcontext/moat/internal/image"
@@ -485,6 +486,13 @@ func (m *Manager) registerPersistedRun(runState State, stateConfirmed bool, skip
 		WorktreeBranch:    meta.WorktreeBranch,
 		WorktreePath:      meta.WorktreePath,
 		WorktreeRepoID:    meta.WorktreeRepoID,
+		DevcontainerHash:  meta.DevcontainerHash,
+		OnCreateCmd:       meta.OnCreateCmd,
+		PostCreateCmd:     meta.PostCreateCmd,
+		PostStartCmd:      meta.PostStartCmd,
+		PostStartUser:     meta.PostStartUser,
+		PostStartHome:     meta.PostStartHome,
+		PostStartWorkdir:  meta.PostStartWorkdir,
 	}
 
 	// If container is confirmed stopped by a live check or by authoritative
@@ -540,6 +548,118 @@ func (m *Manager) registerPersistedRun(runState State, stateConfirmed bool, skip
 		// long-running containers from previous CLI invocations.
 		go m.monitorContainerExit(context.Background(), r)
 	}
+}
+
+// resolveBaseImage returns the explicit base image from moat.yaml, or "".
+// Empty means "let downstream code decide" (auto-select or devcontainer-supplied).
+func resolveBaseImage(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.BaseImage
+}
+
+// UseDevcontainerForImage returns true when the devcontainer should drive
+// the base image. moat.yaml's base_image: or dependencies: take precedence;
+// otherwise the devcontainer wins.
+func UseDevcontainerForImage(cfg *config.Config, dc *devcontainer.Config) bool {
+	if dc == nil {
+		return false
+	}
+	if cfg == nil {
+		return true
+	}
+	return cfg.BaseImage == "" && len(cfg.Dependencies) == 0
+}
+
+// resolveImageSpecForDevcontainer detects the devcontainer configuration,
+// applies precedence rules (moat.yaml base_image/dependencies beat devcontainer),
+// runs the devcontainer Stage A build when applicable, and returns the
+// partially-populated ImageSpec together with the devcontainer base tag and
+// the parsed devcontainer config (nil when not used).
+//
+// The returned ImageSpec has BaseImage set (either from moat.yaml or from
+// the Stage A devcontainer build) and RemapUser/UID/GID set on Linux when
+// the devcontainer specifies a non-root user with updateRemoteUserUID enabled.
+// Other ImageSpec fields (NeedsSSH, InitProviders, etc.) are left at zero
+// for the caller (Create) to fill in after resolving runtime context.
+//
+// dcBaseTag is empty when no devcontainer is used.
+// dcCfg is nil when no devcontainer is used (or when opts.NoDevcontainer is set).
+func (m *Manager) resolveImageSpecForDevcontainer(ctx context.Context, opts Options) (*deps.ImageSpec, string, *devcontainer.Config, error) {
+	// Detect devcontainer.json and apply precedence rule:
+	// moat.yaml base_image or dependencies win over devcontainer.
+	dcCfg, dcErr := devcontainer.Detect(opts.Workspace)
+	if dcErr != nil {
+		return nil, "", nil, fmt.Errorf("parse devcontainer.json: %w", dcErr)
+	}
+	if opts.NoDevcontainer {
+		dcCfg = nil
+	}
+	useDC := UseDevcontainerForImage(opts.Config, dcCfg)
+	if dcCfg != nil && !useDC && (opts.Config != nil && (opts.Config.BaseImage != "" || len(opts.Config.Dependencies) > 0)) {
+		ui.Warnf("devcontainer.json detected but ignored: moat.yaml specifies base_image or dependencies")
+	}
+
+	spec := &deps.ImageSpec{}
+
+	// When --rebuild is requested and the devcontainer is active, remove the
+	// cached Stage A image (moat-devcontainer-<name>:base-<hash>) so that
+	// BuildBase runs a fresh build even though the tag still exists on disk.
+	// The subsequent BuildBase call passes NoCache: opts.Rebuild which ensures
+	// Docker/Apple also bypasses layer cache.
+	if opts.Rebuild && useDC {
+		if hash, hashErr := devcontainer.ContentHash(opts.Workspace); hashErr == nil {
+			baseTag := fmt.Sprintf("moat-devcontainer-%s:base-%s", filepath.Base(opts.Workspace), hash[:12])
+			if removeErr := m.defaultRuntime().RemoveImage(ctx, baseTag); removeErr != nil {
+				log.Debug("could not remove Stage A tag for rebuild", "tag", baseTag, "error", removeErr)
+			}
+		}
+	}
+
+	var dcBaseTag string
+	if useDC {
+		// Stage A: run initializeCommand, build base image, bake containerEnv overlay.
+		if err := devcontainer.RunInitializeCommand(ctx, dcCfg.InitializeCmd, opts.Workspace); err != nil {
+			return nil, "", nil, err
+		}
+		bm := m.defaultRuntime().BuildManager()
+		if bm == nil {
+			return nil, "", nil, fmt.Errorf("runtime %s does not support image building (needed for devcontainer)", m.defaultRuntime().Type())
+		}
+		tag, err := devcontainer.BuildBase(ctx, bm, opts.Workspace, dcCfg, devcontainer.BuildOptions{NoCache: opts.Rebuild})
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("building devcontainer base: %w", err)
+		}
+		dcBaseTag = tag
+	}
+
+	// Prefer devcontainer base over moat.yaml base when useDC is true.
+	specBase := resolveBaseImage(opts.Config)
+	if dcBaseTag != "" {
+		specBase = dcBaseTag
+	}
+	spec.BaseImage = specBase
+
+	// On Linux, remap the devcontainer user's UID/GID to match the workspace
+	// owner so that files inside the workspace mount remain owned by the host
+	// user (mirrors VS Code's updateRemoteUserUID behavior).
+	if useDC && goruntime.GOOS == "linux" && dcCfg.User != "root" && dcCfg.UpdateRemoteUserUID {
+		uid, gid := getWorkspaceOwner(opts.Workspace)
+		spec.RemapUser = dcCfg.User
+		spec.RemapUID = uid
+		spec.RemapGID = gid
+	}
+
+	// Return dcCfg only when the devcontainer is actually being used for the image.
+	// When useDC is false, dcCfg may still be non-nil (detected but overridden by
+	// moat.yaml), but we don't apply devcontainer runtime overrides in that case.
+	var activeDCCfg *devcontainer.Config
+	if useDC {
+		activeDCCfg = dcCfg
+	}
+
+	return spec, dcBaseTag, activeDCCfg, nil
 }
 
 // Create initializes a new run without starting it.
@@ -646,12 +766,32 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 	var mounts []container.MountConfig
 	var tmpfsMounts []container.TmpfsMount
 
-	// Check if any config mount explicitly targets /workspace.
+	// Determine the workspace mount target and capture devcontainer remote env
+	// early. When a devcontainer is active, use its workspaceFolder (default:
+	// /workspaces/<basename>) and remoteEnv. We do a quick Detect here (before
+	// Stage A build) so that mount/workdir/env logic has the values early.
+	// resolveImageSpecForDevcontainer re-uses the same detection later.
+	workspaceTarget := "/workspace"
+	var earlyDCRemoteEnv map[string]string // devcontainer remoteEnv (nil when not active)
+	if !opts.NoDevcontainer {
+		if earlyDCCfg, _ := devcontainer.Detect(opts.Workspace); earlyDCCfg != nil && UseDevcontainerForImage(opts.Config, earlyDCCfg) {
+			if earlyDCCfg.WorkspaceFolder != "" {
+				workspaceTarget = earlyDCCfg.WorkspaceFolder
+			} else {
+				workspaceTarget = "/workspaces/" + filepath.Base(opts.Workspace)
+			}
+			if len(earlyDCCfg.RemoteEnv) > 0 {
+				earlyDCRemoteEnv = earlyDCCfg.RemoteEnv
+			}
+		}
+	}
+
+	// Check if any config mount explicitly targets the workspace target.
 	// If so, skip the implicit workspace mount (the explicit one replaces it).
 	hasExplicitWorkspace := false
 	if opts.Config != nil {
 		for _, me := range opts.Config.Mounts {
-			if me.Target == "/workspace" {
+			if me.Target == workspaceTarget {
 				hasExplicitWorkspace = true
 				break
 			}
@@ -662,7 +802,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 	if !hasExplicitWorkspace {
 		mounts = append(mounts, container.MountConfig{
 			Source:   opts.Workspace,
-			Target:   "/workspace",
+			Target:   workspaceTarget,
 			ReadOnly: false,
 		})
 	}
@@ -1496,6 +1636,12 @@ region = %s
 		extraHosts = append(extraHosts, synthHosts...)
 	}
 
+	// Inject devcontainer remoteEnv before moat.yaml env so that moat.yaml
+	// values take precedence (last-appended wins when env vars are duplicated).
+	for k, v := range earlyDCRemoteEnv {
+		proxyEnv = append(proxyEnv, fmt.Sprintf("%s=%s", k, v))
+	}
+
 	// Add config env vars, filtering out proxy-related variables that would
 	// override moat's proxy settings and re-open the host traffic bypass.
 	if opts.Config != nil {
@@ -1773,7 +1919,8 @@ region = %s
 	}
 
 	// Build the image spec — single source of truth for image resolution,
-	// tag generation, and Dockerfile generation.
+	// tag generation, and Dockerfile generation. resolveImageSpecForDevcontainer
+	// handles devcontainer detection, Stage A build, and base image precedence.
 	hasSSHGrants := len(sshGrants) > 0
 	// Only enable BuildKit-specific Dockerfile features (--mount=type=cache) when
 	// we're certain BuildKit is available. With BUILDKIT_HOST set, a standalone
@@ -1781,24 +1928,33 @@ region = %s
 	// builder, which can fail to parse BuildKit syntax (e.g., --mount=type=cache
 	// confuses legacy parser line counting, causing "unknown instruction" errors).
 	useBuildKit := os.Getenv("BUILDKIT_HOST") != "" && os.Getenv("MOAT_DISABLE_BUILDKIT") != "1"
-	var baseImage string
-	if opts.Config != nil {
-		baseImage = opts.Config.BaseImage
+
+	imageSpec, _, activeDCCfg, specErr := m.resolveImageSpecForDevcontainer(ctx, opts)
+	if specErr != nil {
+		cleanupDaemonRun()
+		cleanupSSH(sshServer)
+		return nil, specErr
 	}
-	imageSpec := &deps.ImageSpec{
-		BaseImage:          baseImage,
-		NeedsSSH:           hasSSHGrants,
-		SSHHosts:           sshGrants,
-		InitProviders:      imgNeeds.initProviders,
-		NeedsFirewall:      needsProxyForFirewall,
-		NeedsGitIdentity:   hasGit,
-		NeedsInitFiles:     imgNeeds.initFiles,
-		NeedsClipboard:     needsClipboard,
-		UseBuildKit:        &useBuildKit,
-		ClaudeMarketplaces: claudeMarketplaces,
-		ClaudePlugins:      claudePlugins,
-		Hooks:              hooks,
+	useDC := activeDCCfg != nil
+
+	// Apply devcontainer extra mounts from the devcontainer.json `mounts:` field.
+	// Colliding targets are replaced (devcontainer entry takes precedence).
+	if useDC {
+		mounts = mergeDevcontainerMounts(mounts, activeDCCfg.Mounts)
 	}
+
+	// Fill in the fields that depend on runtime context built above.
+	imageSpec.NeedsSSH = hasSSHGrants
+	imageSpec.SSHHosts = sshGrants
+	imageSpec.InitProviders = imgNeeds.initProviders
+	imageSpec.NeedsFirewall = needsProxyForFirewall
+	imageSpec.NeedsGitIdentity = hasGit
+	imageSpec.NeedsInitFiles = imgNeeds.initFiles
+	imageSpec.NeedsClipboard = needsClipboard
+	imageSpec.UseBuildKit = &useBuildKit
+	imageSpec.ClaudeMarketplaces = claudeMarketplaces
+	imageSpec.ClaudePlugins = claudePlugins
+	imageSpec.Hooks = hooks
 
 	// Resolve container image based on dependencies and image spec
 	hasDeps := len(installableDeps) > 0
@@ -2437,7 +2593,13 @@ region = %s
 	// translation automatically, so we can use the default moatuser (5000).
 	const moatuserUID = 5000
 	var containerUser string
-	if goruntime.GOOS == "linux" {
+	if useDC && activeDCCfg.User != "" {
+		// When a devcontainer is active, use the devcontainer's user (e.g., "vscode").
+		// On Linux, resolveImageSpecForDevcontainer already baked UID/GID remapping
+		// into the image so the username resolves to the workspace owner's UID.
+		containerUser = activeDCCfg.User
+		log.Debug("using devcontainer user for container", "user", activeDCCfg.User)
+	} else if goruntime.GOOS == "linux" {
 		// Use the workspace owner's UID/GID, not the process UID.
 		// This handles cases where moat is run with sudo or as a different user.
 		workspaceUID, workspaceGID := getWorkspaceOwner(opts.Workspace)
@@ -2448,7 +2610,7 @@ region = %s
 		}
 		// If workspace owner UID is 5000, we can use the image's default moatuser
 	}
-	// On macOS/Windows, leave containerUser empty to use the image default (moatuser)
+	// On macOS/Windows without devcontainer, leave containerUser empty to use image default (moatuser)
 
 	// Determine if container needs privileged mode (only for docker:dind)
 	var privileged bool
@@ -2895,7 +3057,7 @@ region = %s
 		Name:         r.ID,
 		Image:        containerImage,
 		Cmd:          cmd,
-		WorkingDir:   "/workspace",
+		WorkingDir:   workspaceTarget,
 		Env:          proxyEnv,
 		User:         containerUser,
 		ExtraHosts:   extraHosts,
@@ -2936,6 +3098,22 @@ region = %s
 
 	r.ContainerID = containerID
 	r.SSHAgentServer = sshServer
+
+	// Persist devcontainer-derived fields on the Run so that moat exec, status
+	// drift detection, and lifecycle hook execution have the right context.
+	if useDC {
+		r.OnCreateCmd = activeDCCfg.OnCreateCmd
+		r.PostCreateCmd = activeDCCfg.PostCreateCmd
+		r.PostStartCmd = activeDCCfg.PostStartCmd
+		r.PostStartUser = activeDCCfg.User
+		r.PostStartHome = activeDCCfg.Home
+		r.PostStartWorkdir = workspaceTarget
+		if hash, hashErr := devcontainer.ContentHash(opts.Workspace); hashErr == nil {
+			r.DevcontainerHash = hash
+		} else {
+			log.Debug("failed to hash devcontainer content", "error", hashErr)
+		}
+	}
 
 	// Update daemon with the container ID (phase 2 of registration)
 	if r.ProxyAuthToken != "" && m.daemonClient != nil {
@@ -3191,6 +3369,47 @@ func (m *Manager) setupFirewall(ctx context.Context, r *Run) error {
 	return nil
 }
 
+// runDevcontainerLifecycleHooks executes the devcontainer in-container
+// lifecycle hooks (onCreate, postCreate, postStart) via Exec after the
+// container has started. The probed user login-shell env is used so hooks
+// see PATH, conda init, nvm, etc.
+//
+// onCreate and postCreate failures are hard errors (abort the Start).
+// postStart failures warn and continue.
+func (m *Manager) runDevcontainerLifecycleHooks(ctx context.Context, r *Run) error {
+	// No lifecycle hooks to run.
+	if r.OnCreateCmd == "" && r.PostCreateCmd == "" && r.PostStartCmd == "" {
+		return nil
+	}
+	rt := m.defaultRuntime()
+	probedEnv, _ := devcontainer.ProbeUserEnv(ctx, rt, r.ContainerID)
+	hookOpts := devcontainer.HookOpts{
+		User:    r.PostStartUser,
+		Home:    r.PostStartHome,
+		Workdir: r.PostStartWorkdir,
+		Env:     probedEnv,
+	}
+	if r.OnCreateCmd != "" {
+		if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "onCreate", r.OnCreateCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+			return fmt.Errorf("onCreateCommand failed: %w", err)
+		}
+		r.OnCreateCmd = "" // one-shot: don't re-run on restart
+	}
+	if r.PostCreateCmd != "" {
+		if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "postCreate", r.PostCreateCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+			return fmt.Errorf("postCreateCommand failed: %w", err)
+		}
+		r.PostCreateCmd = "" // one-shot: don't re-run on restart
+	}
+	// postStart runs every start; do not clear.
+	if r.PostStartCmd != "" {
+		if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "postStart", r.PostStartCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+			ui.Warnf("postStartCommand failed: %v", err)
+		}
+	}
+	return nil
+}
+
 // Start begins execution of a run.
 func (m *Manager) Start(ctx context.Context, runID string, opts StartOptions) error {
 	m.mu.Lock()
@@ -3209,6 +3428,17 @@ func (m *Manager) Start(ctx context.Context, runID string, opts StartOptions) er
 	}
 
 	if err := m.setupFirewall(ctx, r); err != nil {
+		return err
+	}
+
+	// Run devcontainer lifecycle hooks (onCreate, postCreate, postStart) after
+	// the container starts. onCreate and postCreate failures abort the start;
+	// postStart failures warn and continue (see runDevcontainerLifecycleHooks).
+	if err := m.runDevcontainerLifecycleHooks(ctx, r); err != nil {
+		r.SetStateFailedAt(err.Error(), time.Now())
+		if stopErr := m.defaultRuntime().StopContainer(ctx, r.ContainerID); stopErr != nil {
+			log.Debug("failed to stop container after lifecycle hook error", "error", stopErr)
+		}
 		return err
 	}
 
@@ -4627,4 +4857,38 @@ func hasGrant(grants []string, name string) bool {
 // bedrockEnabled reports whether moat.yaml turns on Claude→Bedrock routing.
 func bedrockEnabled(cfg *config.Config) bool {
 	return cfg != nil && cfg.Claude.Bedrock != nil && cfg.Claude.Bedrock.Enabled
+}
+
+// mergeDevcontainerMounts merges devcontainer mounts into an existing mount
+// list. When a devcontainer mount target collides with an existing entry, the
+// existing entry is removed and replaced by the devcontainer's mount. This
+// prevents Docker from rejecting the run with "Duplicate mount point".
+func mergeDevcontainerMounts(base []container.MountConfig, additions []devcontainer.Mount) []container.MountConfig {
+	if len(additions) == 0 {
+		return base
+	}
+	// Build a set of targets declared by devcontainer additions.
+	replacing := make(map[string]bool, len(additions))
+	for _, a := range additions {
+		replacing[a.Target] = true
+	}
+	// Keep existing mounts whose targets are not overridden.
+	out := base[:0]
+	for _, b := range base {
+		if replacing[b.Target] {
+			log.Warn("devcontainer mount target collides with existing mount; devcontainer entry takes precedence",
+				"target", b.Target)
+			continue
+		}
+		out = append(out, b)
+	}
+	// Append the devcontainer mounts.
+	for _, a := range additions {
+		out = append(out, container.MountConfig{
+			Source:   a.Source,
+			Target:   a.Target,
+			ReadOnly: a.ReadOnly,
+		})
+	}
+	return out
 }

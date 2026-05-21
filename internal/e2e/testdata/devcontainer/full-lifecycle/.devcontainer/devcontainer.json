@@ -1,0 +1,7 @@
+{
+  "image": "debian:bookworm-slim",
+  "initializeCommand": "touch ${localWorkspaceFolder}/initialize.host",
+  "onCreateCommand":   "touch ${containerWorkspaceFolder}/onCreate.in",
+  "postCreateCommand": "touch ${containerWorkspaceFolder}/postCreate.in",
+  "postStartCommand":  "touch ${containerWorkspaceFolder}/postStart.in"
+}

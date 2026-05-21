@@ -1,0 +1,375 @@
+// Package devcontainer parses and acts on devcontainer.json (the VS Code
+// Dev Containers spec) so moat can use a workspace's devcontainer as the
+// source of truth for image, user, mounts, env, and lifecycle hooks.
+package devcontainer
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/majorcontext/moat/internal/ui"
+)
+
+// Config is a parsed devcontainer.json, normalized for moat's use.
+type Config struct {
+	Image               string
+	Build               *BuildConfig
+	User                string
+	Home                string
+	WorkspaceFolder     string
+	ContainerEnv        map[string]string
+	RemoteEnv           map[string]string
+	Mounts              []Mount
+	InitializeCmd       string
+	OnCreateCmd         string
+	PostCreateCmd       string
+	PostStartCmd        string
+	SourcePath          string
+	UpdateRemoteUserUID bool
+}
+
+// BuildConfig is the "build" subobject from devcontainer.json.
+type BuildConfig struct {
+	Dockerfile string            // path relative to .devcontainer/
+	Context    string            // path relative to .devcontainer/; default "."
+	Args       map[string]string // --build-arg key=value
+	Target     string            // --target
+}
+
+// Mount is a single bind or volume mount declared in devcontainer.json.
+type Mount struct {
+	Source   string
+	Target   string
+	Type     string // "bind" or "volume"
+	ReadOnly bool
+}
+
+// ErrNotFound is returned by Detect when no devcontainer.json exists.
+// Callers should not treat this as an error; Detect returns (nil, nil) instead.
+var ErrNotFound = errors.New("devcontainer.json not found")
+
+// parseLogger is a test hook for capturing the unsupported-fields warn payload.
+// Production parse() calls ui.Warn directly via emitUnsupportedWarning.
+var parseLogger func([]string)
+
+var supportedFields = map[string]bool{
+	"name":                true,
+	"image":               true,
+	"build":               true,
+	"remoteUser":          true,
+	"containerUser":       true,
+	"workspaceFolder":     true,
+	"containerEnv":        true,
+	"remoteEnv":           true,
+	"mounts":              true,
+	"initializeCommand":   true,
+	"onCreateCommand":     true,
+	"postCreateCommand":   true,
+	"postStartCommand":    true,
+	"updateRemoteUserUID": true,
+}
+
+func collectUnsupported(top map[string]any) []string {
+	var keys []string
+	for k := range top {
+		if !supportedFields[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// emitUnsupportedWarning prints a single ui.Warn listing fields that moat
+// does not honor. Tests bypass this via parseLogger.
+func emitUnsupportedWarning(path string, fields []string) {
+	ui.Warnf("%s: ignoring unsupported devcontainer fields: %s",
+		path, strings.Join(fields, ", "))
+}
+
+// expandContext holds the values needed to resolve ${var} references in
+// devcontainer.json field values.
+type expandContext struct {
+	workspace       string
+	workspaceFolder string
+	containerEnv    map[string]string // optional; if non-nil, ${containerEnv:X} is resolved
+}
+
+var varRe = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// expandVars replaces ${var} references in s using ctx.  Unknown references
+// are left unchanged (returned verbatim including the ${ } delimiters).
+func expandVars(s string, ctx expandContext) string {
+	return varRe.ReplaceAllStringFunc(s, func(m string) string {
+		name := m[2 : len(m)-1]
+		switch name {
+		case "localWorkspaceFolder":
+			return ctx.workspace
+		case "localWorkspaceFolderBasename":
+			return filepath.Base(ctx.workspace)
+		case "containerWorkspaceFolder":
+			if ctx.workspaceFolder != "" {
+				return ctx.workspaceFolder
+			}
+			return "/workspaces/" + filepath.Base(ctx.workspace)
+		case "containerWorkspaceFolderBasename":
+			if ctx.workspaceFolder != "" {
+				return filepath.Base(ctx.workspaceFolder)
+			}
+			return filepath.Base(ctx.workspace)
+		}
+		if strings.HasPrefix(name, "localEnv:") {
+			return lookupWithDefault(name[len("localEnv:"):], os.Getenv)
+		}
+		if strings.HasPrefix(name, "containerEnv:") && ctx.containerEnv != nil {
+			return lookupWithDefault(name[len("containerEnv:"):], func(k string) string {
+				return ctx.containerEnv[k]
+			})
+		}
+		return m
+	})
+}
+
+// lookupWithDefault parses "KEY" or "KEY:default" from spec, calls lookup(KEY),
+// and returns the default if the value is empty and a default was provided.
+func lookupWithDefault(spec string, lookup func(string) string) string {
+	name, dflt, hasDflt := strings.Cut(spec, ":")
+	v := lookup(name)
+	if v == "" && hasDflt {
+		return dflt
+	}
+	return v
+}
+
+// Detect returns the parsed devcontainer.json from <workspace>/.devcontainer/,
+// or (nil, nil) if the file does not exist. A malformed file is a hard error.
+func Detect(workspace string) (*Config, error) {
+	path := filepath.Join(workspace, ".devcontainer", "devcontainer.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return parse(path, workspace, raw)
+}
+
+// stripJSONC removes // line comments, /* block comments */, and trailing
+// commas from JSONC, leaving the result valid JSON. String literals are
+// preserved verbatim, including escape sequences.
+func stripJSONC(in []byte) []byte {
+	out := make([]byte, 0, len(in))
+	i := 0
+	inString := false
+	for i < len(in) {
+		c := in[i]
+		if inString {
+			out = append(out, c)
+			if c == '\\' && i+1 < len(in) {
+				out = append(out, in[i+1])
+				i += 2
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+		if c == '"' {
+			inString = true
+			out = append(out, c)
+			i++
+			continue
+		}
+		if c == '/' && i+1 < len(in) {
+			if in[i+1] == '/' {
+				for i < len(in) && in[i] != '\n' {
+					i++
+				}
+				continue
+			}
+			if in[i+1] == '*' {
+				i += 2
+				for i+1 < len(in) && !(in[i] == '*' && in[i+1] == '/') {
+					i++
+				}
+				if i+1 < len(in) {
+					i += 2
+				} else {
+					i = len(in) // unterminated comment runs to EOF
+				}
+				continue
+			}
+		}
+		// Drop a trailing comma before } or ] (skipping whitespace).
+		if c == ',' {
+			j := i + 1
+			for j < len(in) && (in[j] == ' ' || in[j] == '\t' || in[j] == '\n' || in[j] == '\r') {
+				j++
+			}
+			if j < len(in) && (in[j] == '}' || in[j] == ']') {
+				i++
+				continue
+			}
+		}
+		out = append(out, c)
+		i++
+	}
+	return out
+}
+
+// parse is the testable core of Detect.
+func parse(path, workspace string, raw []byte) (*Config, error) {
+	var top map[string]any
+	if err := json.Unmarshal(stripJSONC(raw), &top); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	if unsupported := collectUnsupported(top); len(unsupported) > 0 {
+		if parseLogger != nil {
+			parseLogger(unsupported)
+		} else {
+			emitUnsupportedWarning(path, unsupported)
+		}
+	}
+
+	cfg := &Config{
+		SourcePath:          path,
+		UpdateRemoteUserUID: true,
+		ContainerEnv:        map[string]string{},
+		RemoteEnv:           map[string]string{},
+	}
+
+	if v, ok := top["image"].(string); ok {
+		cfg.Image = v
+	}
+	if rawBuild, ok := top["build"].(map[string]any); ok {
+		cfg.Build = parseBuild(rawBuild)
+	}
+	if cfg.Image == "" && cfg.Build == nil {
+		return nil, fmt.Errorf("%s: must specify either \"image\" or \"build.dockerfile\"", path)
+	}
+
+	// User: remoteUser ?? containerUser ?? "root"
+	if v, ok := top["remoteUser"].(string); ok && v != "" {
+		cfg.User = v
+	} else if v, ok := top["containerUser"].(string); ok && v != "" {
+		cfg.User = v
+	} else {
+		cfg.User = "root"
+	}
+	if cfg.User == "root" {
+		cfg.Home = "/root"
+	} else {
+		cfg.Home = "/home/" + cfg.User
+	}
+
+	if v, ok := top["updateRemoteUserUID"].(bool); ok {
+		cfg.UpdateRemoteUserUID = v
+	}
+
+	ctx := expandContext{workspace: workspace}
+	if v, ok := top["workspaceFolder"].(string); ok && v != "" {
+		cfg.WorkspaceFolder = expandVars(v, ctx)
+	}
+	ctx.workspaceFolder = cfg.WorkspaceFolder
+
+	if rawCE, ok := top["containerEnv"].(map[string]any); ok {
+		for k, v := range rawCE {
+			cfg.ContainerEnv[k] = expandVars(fmt.Sprint(v), ctx)
+		}
+	}
+	ctx.containerEnv = cfg.ContainerEnv
+
+	if rawRE, ok := top["remoteEnv"].(map[string]any); ok {
+		for k, v := range rawRE {
+			cfg.RemoteEnv[k] = expandVars(fmt.Sprint(v), ctx)
+		}
+	}
+
+	if rawMounts, ok := top["mounts"].([]any); ok {
+		for _, raw := range rawMounts {
+			m, err := parseMount(raw, ctx)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			cfg.Mounts = append(cfg.Mounts, m)
+		}
+	}
+
+	cfg.InitializeCmd = expandVars(parseLifecycleCommand(top["initializeCommand"]), ctx)
+	cfg.OnCreateCmd = expandVars(parseLifecycleCommand(top["onCreateCommand"]), ctx)
+	cfg.PostCreateCmd = expandVars(parseLifecycleCommand(top["postCreateCommand"]), ctx)
+	cfg.PostStartCmd = expandVars(parseLifecycleCommand(top["postStartCommand"]), ctx)
+
+	return cfg, nil
+}
+
+func parseMount(raw any, ctx expandContext) (Mount, error) {
+	var fields map[string]string
+	switch v := raw.(type) {
+	case string:
+		fields = map[string]string{}
+		for _, part := range strings.Split(v, ",") {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 {
+				fields[kv[0]] = kv[1]
+			} else if kv[0] == "readonly" || kv[0] == "ro" {
+				fields["readonly"] = "true"
+			}
+		}
+	case map[string]any:
+		fields = map[string]string{}
+		for k, val := range v {
+			fields[k] = fmt.Sprint(val)
+		}
+	default:
+		return Mount{}, fmt.Errorf("unrecognized mount: %v", raw)
+	}
+	typ := fields["type"]
+	if typ == "" {
+		typ = "bind"
+	}
+	if typ != "bind" && typ != "volume" {
+		return Mount{}, fmt.Errorf("unsupported mount type %q (only bind and volume)", typ)
+	}
+	ro := false
+	if v, ok := fields["readonly"]; ok && (v == "true" || v == "1") {
+		ro = true
+	}
+	return Mount{
+		Source:   expandVars(fields["source"], ctx),
+		Target:   expandVars(fields["target"], ctx),
+		Type:     typ,
+		ReadOnly: ro,
+	}, nil
+}
+
+func parseBuild(raw map[string]any) *BuildConfig {
+	df, _ := raw["dockerfile"].(string)
+	if df == "" {
+		return nil
+	}
+	bc := &BuildConfig{Dockerfile: df, Context: "."}
+	if v, ok := raw["context"].(string); ok && v != "" {
+		bc.Context = v
+	}
+	if v, ok := raw["target"].(string); ok {
+		bc.Target = v
+	}
+	if rawArgs, ok := raw["args"].(map[string]any); ok && len(rawArgs) > 0 {
+		bc.Args = make(map[string]string, len(rawArgs))
+		for k, v := range rawArgs {
+			bc.Args[k] = fmt.Sprint(v)
+		}
+	}
+	return bc
+}

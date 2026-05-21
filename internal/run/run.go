@@ -129,20 +129,40 @@ type Run struct {
 
 	// ServiceContainers maps service name to container ID (e.g., "postgres" -> "abc123").
 	ServiceContainers map[string]string
+
+	// DevcontainerHash is the sha256 of .devcontainer/ contents at run creation.
+	// Empty if no devcontainer was used. Compared against the live workspace
+	// at status time to surface drift hints.
+	DevcontainerHash string `json:"devcontainerHash,omitempty"`
+
+	// OnCreateCmd / PostCreateCmd are the devcontainer onCreate and postCreate
+	// commands. They run once when the container first starts.
+	OnCreateCmd   string `json:"onCreateCmd,omitempty"`
+	PostCreateCmd string `json:"postCreateCmd,omitempty"`
+
+	// PostStartCmd is the devcontainer postStartCommand. Persisted so that
+	// restarts re-run it. Empty when no devcontainer is used.
+	PostStartCmd string `json:"postStartCmd,omitempty"`
+
+	// PostStartUser/Home/Workdir record the exec context for lifecycle hooks.
+	PostStartUser    string `json:"postStartUser,omitempty"`
+	PostStartHome    string `json:"postStartHome,omitempty"`
+	PostStartWorkdir string `json:"postStartWorkdir,omitempty"`
 }
 
 // Options configures a new run.
 type Options struct {
-	Name          string // Optional explicit name (--name flag or from config)
-	Workspace     string
-	Grants        []string
-	Cmd           []string       // Command to run (default: /bin/bash)
-	Config        *config.Config // Optional moat.yaml config
-	Env           []string       // Additional environment variables (KEY=VALUE)
-	Rebuild       bool           // Force rebuild of container image (ignores cache)
-	KeepContainer bool           // If true, don't auto-remove container after run
-	Interactive   bool           // Keep stdin open for interactive input
-	Clipboard     bool           // Enable host clipboard bridging
+	Name           string // Optional explicit name (--name flag or from config)
+	Workspace      string
+	Grants         []string
+	Cmd            []string       // Command to run (default: /bin/bash)
+	Config         *config.Config // Optional moat.yaml config
+	Env            []string       // Additional environment variables (KEY=VALUE)
+	Rebuild        bool           // Force rebuild of container image (ignores cache)
+	KeepContainer  bool           // If true, don't auto-remove container after run
+	Interactive    bool           // Keep stdin open for interactive input
+	Clipboard      bool           // Enable host clipboard bridging
+	NoDevcontainer bool           // Forces moat to ignore .devcontainer/devcontainer.json
 }
 
 // generateID creates a unique run identifier.
@@ -188,6 +208,13 @@ func (r *Run) SaveMetadata() error {
 		BuildkitContainerID: r.BuildkitContainerID,
 		NetworkID:           r.NetworkID,
 		ServiceContainers:   r.ServiceContainers,
+		DevcontainerHash:    r.DevcontainerHash,
+		OnCreateCmd:         r.OnCreateCmd,
+		PostCreateCmd:       r.PostCreateCmd,
+		PostStartCmd:        r.PostStartCmd,
+		PostStartUser:       r.PostStartUser,
+		PostStartHome:       r.PostStartHome,
+		PostStartWorkdir:    r.PostStartWorkdir,
 	})
 }
 

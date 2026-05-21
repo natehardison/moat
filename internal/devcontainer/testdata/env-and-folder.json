@@ -1,0 +1,12 @@
+{
+  "image": "ubuntu:24.04",
+  "remoteUser": "dev",
+  "workspaceFolder": "/work/${localWorkspaceFolderBasename}",
+  "containerEnv": {
+    "BASE": "from-container",
+    "LOCAL_USER": "${localEnv:USER}"
+  },
+  "remoteEnv": {
+    "DERIVED": "${containerEnv:BASE}-x"
+  }
+}

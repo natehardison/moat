@@ -104,6 +104,7 @@ func cloneConfig(c *Config) *Config {
 	out.Claude = mergeClaudeConfig(ClaudeConfig{}, c.Claude)
 	out.Codex = mergeCodexConfig(CodexConfig{}, c.Codex)
 	out.Gemini = mergeGeminiConfig(GeminiConfig{}, c.Gemini)
+	out.Kiro = mergeKiroConfig(KiroConfig{}, c.Kiro)
 
 	// Slices — copy element-by-element WITHOUT deduplication so that
 	// invalid configs (e.g. duplicate volume names) remain detectable.
@@ -145,6 +146,7 @@ func mergeNested(d, p, out *Config) {
 	out.Claude = mergeClaudeConfig(d.Claude, p.Claude)
 	out.Codex = mergeCodexConfig(d.Codex, p.Codex)
 	out.Gemini = mergeGeminiConfig(d.Gemini, p.Gemini)
+	out.Kiro = mergeKiroConfig(d.Kiro, p.Kiro)
 	out.Container = mergeContainerConfig(d.Container, p.Container)
 	out.Network = mergeNetworkConfig(d.Network, p.Network)
 	out.Snapshots = mergeSnapshotConfig(d.Snapshots, p.Snapshots)
@@ -162,6 +164,8 @@ func mergeNested(d, p, out *Config) {
 //   - Marketplaces map[string]MarketplaceSpec — per-key; project wins per key
 //   - MCP map[string]MCPServerSpec — per-key; project wins per key
 //   - LLMGateway *LLMGatewayConfig — opaque pointer; project wins if non-nil; both non-nil: recurse
+//   - Env map[string]string — per-key; project wins per key
+//   - Bedrock *BedrockConfig — opaque pointer; project wins if non-nil
 //   - SkipPermissionsPrompt bool — yaml:"-"; OR semantics (true survives)
 func mergeClaudeConfig(d, p ClaudeConfig) ClaudeConfig {
 	return ClaudeConfig{
@@ -171,7 +175,37 @@ func mergeClaudeConfig(d, p ClaudeConfig) ClaudeConfig {
 		Marketplaces:          mergeMarketplaceMap(d.Marketplaces, p.Marketplaces),
 		MCP:                   mergeMCPSpecMap(d.MCP, p.MCP),
 		LLMGateway:            mergeLLMGatewayPtr(p.LLMGateway, d.LLMGateway),
+		Env:                   mergeStringMap(d.Env, p.Env),
+		Bedrock:               mergeBedrockConfigPtr(p.Bedrock, d.Bedrock),
 		SkipPermissionsPrompt: p.SkipPermissionsPrompt || d.SkipPermissionsPrompt,
+	}
+}
+
+// mergeBedrockConfigPtr merges two *BedrockConfig pointers. Primary wins if
+// non-nil; otherwise fallback is cloned. Returns nil if both are nil.
+// BedrockConfig has only scalar fields and a value-type BedrockModels struct,
+// so a value copy is sufficient (no aliasing concerns).
+func mergeBedrockConfigPtr(primary, fallback *BedrockConfig) *BedrockConfig {
+	if primary != nil {
+		c := *primary
+		return &c
+	}
+	if fallback == nil {
+		return nil
+	}
+	c := *fallback
+	return &c
+}
+
+// mergeKiroConfig merges two KiroConfig values.
+//
+// Fields merged:
+//   - SyncLogs *bool — mergeBoolPtr
+//   - MCP map[string]MCPServerSpec — per-key merge
+func mergeKiroConfig(d, p KiroConfig) KiroConfig {
+	return KiroConfig{
+		SyncLogs: mergeBoolPtr(p.SyncLogs, d.SyncLogs),
+		MCP:      mergeMCPSpecMap(d.MCP, p.MCP),
 	}
 }
 

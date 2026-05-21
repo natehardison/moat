@@ -731,7 +731,7 @@ func (m *appleBuildManager) BuildImage(ctx context.Context, dockerfile string, t
 
 	output.BuildingImage(tag)
 
-	buildErr := m.runBuild(ctx, dockerfilePath, tag, opts.NoCache, tmpDir)
+	buildErr := m.runBuild(ctx, dockerfilePath, tag, opts, tmpDir)
 	if buildErr == nil {
 		return nil
 	}
@@ -752,14 +752,14 @@ func (m *appleBuildManager) BuildImage(ctx context.Context, dockerfile string, t
 	}
 
 	ui.Info("Retrying build...")
-	if err := m.runBuild(ctx, dockerfilePath, tag, opts.NoCache, tmpDir); err != nil {
+	if err := m.runBuild(ctx, dockerfilePath, tag, opts, tmpDir); err != nil {
 		return fmt.Errorf("building image (retry failed): %w", err)
 	}
 	return nil
 }
 
 // runBuild executes a single container build attempt, capturing stderr for error detection.
-func (m *appleBuildManager) runBuild(ctx context.Context, dockerfilePath, tag string, noCache bool, contextDir string) error {
+func (m *appleBuildManager) runBuild(ctx context.Context, dockerfilePath, tag string, opts BuildOptions, contextDir string) error {
 	cpus := goruntime.NumCPU() / 2
 	if cpus < 2 {
 		cpus = 2
@@ -770,8 +770,22 @@ func (m *appleBuildManager) runBuild(ctx context.Context, dockerfilePath, tag st
 		"--cpus", strconv.Itoa(cpus),
 		"--memory", "8192MB",
 	}
-	if noCache {
+	if opts.NoCache {
 		args = append(args, "--no-cache")
+	}
+	if opts.Target != "" {
+		args = append(args, "--target", opts.Target)
+	}
+	// Sort build arg keys for deterministic CLI invocation.
+	if len(opts.BuildArgs) > 0 {
+		keys := make([]string, 0, len(opts.BuildArgs))
+		for k := range opts.BuildArgs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "--build-arg", k+"="+opts.BuildArgs[k])
+		}
 	}
 	args = append(args, contextDir)
 

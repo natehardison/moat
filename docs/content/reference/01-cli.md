@@ -45,7 +45,7 @@ The agent commands (`moat claude`, `moat codex`, `moat gemini`, `moat kiro`) sha
 | `-e`, `--env KEY=VALUE` | Set environment variable (repeatable) |
 | `-m`, `--mount SOURCE:TARGET[:MODE]` | Additional mount (repeatable). See [Mounts reference](./05-mounts.md). |
 | `-n`, `--name NAME` | Run name (default: from `moat.yaml` or random) |
-| `--rebuild` | Force rebuild of container image |
+| `--rebuild` | Force rebuild of container image (also invalidates the devcontainer Stage A base image) |
 | `--allow-host HOST` | Additional hosts to allow network access to (repeatable) |
 | `--runtime RUNTIME` | Container runtime to use (`apple`, `docker`) |
 | `--keep` | Keep container after run completes |
@@ -123,10 +123,11 @@ moat run [flags] [path] [-- command]
 | `-e`, `--env KEY=VALUE` | Set environment variable (repeatable) |
 | `-m`, `--mount SOURCE:TARGET[:MODE]` | Additional mount (repeatable). See [Mounts reference](./05-mounts.md). |
 | `-i`, `--interactive` | Enable interactive mode (stdin + TTY) |
-| `--rebuild` | Force rebuild of container image |
+| `--rebuild` | Force rebuild of container image (also invalidates the devcontainer Stage A base image) |
 | `--runtime RUNTIME` | Container runtime to use (apple, docker) |
 | `--keep` | Keep container after run completes |
 | `--no-clipboard` | Disable host clipboard bridging for this run |
+| `--no-devcontainer` | Ignore `.devcontainer/devcontainer.json` in the workspace |
 | `--no-sandbox` | Disable gVisor sandboxing (Docker only) |
 | `--tty-trace FILE` | Capture terminal I/O to file for debugging (e.g., `session.json`) |
 

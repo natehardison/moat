@@ -1,0 +1,5 @@
+{
+  "image": "ubuntu:24.04",
+  "containerUser": "node",
+  "remoteUser": "vscode"
+}

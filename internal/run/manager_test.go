@@ -18,6 +18,7 @@ import (
 	"github.com/majorcontext/moat/internal/credential"
 	"github.com/majorcontext/moat/internal/daemon"
 	"github.com/majorcontext/moat/internal/deps"
+	"github.com/majorcontext/moat/internal/devcontainer"
 	"github.com/majorcontext/moat/internal/routing"
 	"github.com/majorcontext/moat/internal/storage"
 )
@@ -1446,6 +1447,21 @@ func TestReplaceHostInEnv_KeyNotReplaced(t *testing.T) {
 	}
 }
 
+func TestResolveBaseImage_NoConfig(t *testing.T) {
+	got := resolveBaseImage(nil)
+	if got != "" {
+		t.Errorf("resolveBaseImage(nil) = %q, want \"\"", got)
+	}
+}
+
+func TestResolveBaseImage_FromConfig(t *testing.T) {
+	cfg := &config.Config{BaseImage: "ubuntu:24.04"}
+	got := resolveBaseImage(cfg)
+	if got != "ubuntu:24.04" {
+		t.Errorf("resolveBaseImage = %q, want ubuntu:24.04", got)
+	}
+}
+
 // TestResolveMountExcludesToTmpfs verifies that mount excludes are correctly
 // resolved to tmpfs mounts with absolute container paths.
 func TestResolveMountExcludesToTmpfs(t *testing.T) {
@@ -1954,5 +1970,117 @@ func TestRewriteExtraHostsForCustomNetwork(t *testing.T) {
 				t.Errorf("moat-host entry not rewritten, got %q", extraHosts[2])
 			}
 		})
+	}
+}
+
+func TestManager_DevcontainerPrecedence(t *testing.T) {
+	cases := []struct {
+		name            string
+		configBaseImage string
+		configDeps      []string
+		hasDevcontainer bool
+		wantUse         bool
+	}{
+		{"no-dc-no-base", "", nil, false, false},
+		{"no-dc-with-base", "x:1", nil, false, false},
+		{"dc-no-config", "", nil, true, true},
+		{"dc-config-silent", "", nil, true, true},
+		{"dc-config-with-base", "x:1", nil, true, false},
+		{"dc-config-with-deps", "", []string{"node:20"}, true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var cfg *config.Config
+			if c.configBaseImage != "" || c.configDeps != nil {
+				cfg = &config.Config{BaseImage: c.configBaseImage, Dependencies: c.configDeps}
+			}
+			var dc *devcontainer.Config
+			if c.hasDevcontainer {
+				dc = &devcontainer.Config{Image: "ubuntu:24.04"}
+			}
+			got := UseDevcontainerForImage(cfg, dc)
+			if got != c.wantUse {
+				t.Errorf("%s: got %v, want %v", c.name, got, c.wantUse)
+			}
+		})
+	}
+}
+
+// TestRegisterPersistedRunRestoresDevcontainerFields verifies that all seven
+// devcontainer lifecycle hook fields survive a save/load round-trip through
+// storage.Metadata and registerPersistedRun.
+func TestRegisterPersistedRunRestoresDevcontainerFields(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("MOAT_HOME", "")
+
+	baseDir := filepath.Join(tmpHome, ".moat", "runs")
+	runID := "run_dc_persist_01"
+	store, err := storage.NewRunStore(baseDir, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.SaveMetadata(storage.Metadata{
+		Name:             "dc-agent",
+		ContainerID:      "container-dc01",
+		State:            "stopped",
+		Workspace:        "/tmp/ws",
+		CreatedAt:        time.Now().Add(-1 * time.Hour),
+		DevcontainerHash: "abc123hash",
+		OnCreateCmd:      "echo oncreate",
+		PostCreateCmd:    "npm install",
+		PostStartCmd:     "npm run dev",
+		PostStartUser:    "node",
+		PostStartHome:    "/home/node",
+		PostStartWorkdir: "/workspace/app",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routeDir := filepath.Join(tmpHome, ".moat", "routes")
+	routes, err := routing.NewRouteTable(routeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{
+		runtimePool: container.NewRuntimePoolWithDefault(&stubRuntime{
+			states: map[string]string{"container-dc01": "exited"},
+		}),
+		runs:   make(map[string]*Run),
+		routes: routes,
+	}
+
+	if err := m.loadPersistedRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	r, ok := m.runs[runID]
+	if !ok {
+		t.Fatalf("run %s not loaded", runID)
+	}
+
+	if r.DevcontainerHash != "abc123hash" {
+		t.Errorf("DevcontainerHash: got %q, want %q", r.DevcontainerHash, "abc123hash")
+	}
+	if r.OnCreateCmd != "echo oncreate" {
+		t.Errorf("OnCreateCmd: got %q, want %q", r.OnCreateCmd, "echo oncreate")
+	}
+	if r.PostCreateCmd != "npm install" {
+		t.Errorf("PostCreateCmd: got %q, want %q", r.PostCreateCmd, "npm install")
+	}
+	if r.PostStartCmd != "npm run dev" {
+		t.Errorf("PostStartCmd: got %q, want %q", r.PostStartCmd, "npm run dev")
+	}
+	if r.PostStartUser != "node" {
+		t.Errorf("PostStartUser: got %q, want %q", r.PostStartUser, "node")
+	}
+	if r.PostStartHome != "/home/node" {
+		t.Errorf("PostStartHome: got %q, want %q", r.PostStartHome, "/home/node")
+	}
+	if r.PostStartWorkdir != "/workspace/app" {
+		t.Errorf("PostStartWorkdir: got %q, want %q", r.PostStartWorkdir, "/workspace/app")
 	}
 }

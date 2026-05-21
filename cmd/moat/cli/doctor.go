@@ -17,8 +17,10 @@ import (
 	"github.com/majorcontext/moat/internal/config"
 	"github.com/majorcontext/moat/internal/container"
 	"github.com/majorcontext/moat/internal/credential"
+	"github.com/majorcontext/moat/internal/devcontainer"
 	"github.com/majorcontext/moat/internal/doctor"
 	"github.com/majorcontext/moat/internal/providers/codex"
+	"github.com/majorcontext/moat/internal/run"
 	"github.com/majorcontext/moat/internal/storage"
 	"github.com/majorcontext/moat/internal/ui"
 	"github.com/spf13/cobra"
@@ -62,6 +64,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	reg.Register(&codex.DoctorSection{})
 	reg.Register(&storageSection{})
 	reg.Register(&runsSection{})
+
+	cwd, _ := os.Getwd()
+	reg.Register(&devcontainerSection{workspace: cwd})
 
 	// Run all sections
 	for _, section := range reg.Sections() {
@@ -464,6 +469,53 @@ func (s *storageSection) Print(w io.Writer) error {
 		fmt.Fprintf(tw, "Exists:\t%s (%v)\n", ui.FailTag(), err)
 	}
 
+	return tw.Flush()
+}
+
+// devcontainerSection shows devcontainer.json status for the current workspace.
+type devcontainerSection struct {
+	workspace string
+}
+
+func (s *devcontainerSection) Name() string { return "Devcontainer" }
+
+func (s *devcontainerSection) Print(w io.Writer) error {
+	cfg, err := devcontainer.Detect(s.workspace)
+	if err != nil {
+		fmt.Fprintf(w, "Devcontainer: ERROR parsing: %v\n", err)
+		return nil
+	}
+	if cfg == nil {
+		fmt.Fprintln(w, "Devcontainer: not present")
+		return nil
+	}
+
+	// Determine source description
+	source := ""
+	if cfg.Image != "" {
+		source = "image: " + cfg.Image
+	} else if cfg.Build != nil {
+		source = "build: " + cfg.Build.Dockerfile
+	}
+
+	// Determine if moat uses this devcontainer for the image
+	// (moat.yaml base_image or dependencies override the devcontainer)
+	var moatCfg *config.Config
+	configPath := filepath.Join(s.workspace, config.ConfigFilename)
+	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
+		configPath = filepath.Join(s.workspace, config.LegacyConfigFilename)
+	}
+	if parsed, parseErr := config.Load(configPath); parseErr == nil {
+		moatCfg = parsed
+	}
+	usedByMoat := run.UseDevcontainerForImage(moatCfg, cfg)
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "Devcontainer:")
+	fmt.Fprintf(tw, "  source:\t%s\n", source)
+	fmt.Fprintf(tw, "  user:\t%s\n", cfg.User)
+	fmt.Fprintf(tw, "  workspaceFolder:\t%s\n", cfg.WorkspaceFolder)
+	fmt.Fprintf(tw, "  used by moat:\t%v\n", usedByMoat)
 	return tw.Flush()
 }
 

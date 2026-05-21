@@ -1,0 +1,10 @@
+{
+  "image": "ubuntu:24.04",
+  "initializeCommand": "echo init",
+  "onCreateCommand": ["echo", "hello"],
+  "postCreateCommand": {
+    "first":  "echo first",
+    "second": ["echo", "second"]
+  },
+  "postStartCommand": "echo start"
+}

@@ -252,6 +252,7 @@ func GenerateDockerfile(deps []Dependency, opts *ImageSpec) (*DockerfileResult, 
 	writeBuildHooks(&b, opts.Hooks)
 
 	// Finalize with entrypoint and user setup
+	writeUIDRemap(&b, opts)
 	writeEntrypoint(&b, opts, c.dockerMode, contextFiles)
 
 	return &DockerfileResult{
@@ -585,6 +586,25 @@ func formatHookCommand(cmd string) string {
 		}
 	}
 	return strings.Join(lines, " && \\\n    ")
+}
+
+// writeUIDRemap appends a RUN block that remaps a non-root user's UID/GID
+// to host values at image build time. No-op when RemapUser is empty or
+// equals "root". The chown step is best-effort.
+func writeUIDRemap(b *strings.Builder, opts *ImageSpec) {
+	if opts == nil || opts.RemapUser == "" || opts.RemapUser == "root" {
+		return
+	}
+	fmt.Fprintf(b, "ARG MOAT_USER=%s\n", opts.RemapUser)
+	fmt.Fprintf(b, "ARG MOAT_UID=%d\n", opts.RemapUID)
+	fmt.Fprintf(b, "ARG MOAT_GID=%d\n", opts.RemapGID)
+	b.WriteString(`RUN if [ "$MOAT_USER" != "root" ] && id "$MOAT_USER" >/dev/null 2>&1; then \
+      groupmod -o -g "$MOAT_GID" "$(id -gn "$MOAT_USER")" && \
+      usermod  -o -u "$MOAT_UID" "$MOAT_USER" && \
+      chown -R "$MOAT_UID:$MOAT_GID" "$(getent passwd "$MOAT_USER" | cut -d: -f6)" 2>/dev/null || true; \
+    fi
+`)
+	b.WriteString("\n")
 }
 
 // writeEntrypoint writes the entrypoint configuration and working directory.

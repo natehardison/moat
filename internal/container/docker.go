@@ -1211,6 +1211,8 @@ func (m *dockerBuildManager) buildImageWithBuildKit(ctx context.Context, dockerf
 		ContextDir: tmpDir,
 		NoCache:    opts.NoCache,
 		Platform:   platform,
+		BuildArgs:  opts.BuildArgs,
+		Target:     opts.Target,
 	})
 }
 
@@ -1246,6 +1248,8 @@ func (m *dockerBuildManager) buildImageWithEmbeddedBuildKit(ctx context.Context,
 		ContextDir: tmpDir,
 		NoCache:    opts.NoCache,
 		Platform:   platform,
+		BuildArgs:  opts.BuildArgs,
+		Target:     opts.Target,
 	})
 }
 
@@ -1301,6 +1305,16 @@ func (m *dockerBuildManager) buildImageWithBuilder(ctx context.Context, dockerfi
 
 	output.BuildingImage(tag)
 
+	// Convert BuildArgs from map[string]string to map[string]*string (Docker SDK format).
+	var buildArgs map[string]*string
+	if len(opts.BuildArgs) > 0 {
+		buildArgs = make(map[string]*string, len(opts.BuildArgs))
+		for k, v := range opts.BuildArgs {
+			v := v // capture loop variable
+			buildArgs[k] = &v
+		}
+	}
+
 	// Build the image
 	resp, err := m.cli.ImageBuild(ctx, &buf, build.ImageBuildOptions{
 		Tags:       []string{tag},
@@ -1309,6 +1323,8 @@ func (m *dockerBuildManager) buildImageWithBuilder(ctx context.Context, dockerfi
 		Platform:   platform,
 		Version:    builderVersion,
 		NoCache:    opts.NoCache,
+		Target:     opts.Target,
+		BuildArgs:  buildArgs,
 	})
 	if err != nil {
 		return fmt.Errorf("building image: %w", err)

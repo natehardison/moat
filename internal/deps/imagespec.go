@@ -59,6 +59,14 @@ type ImageSpec struct {
 
 	// Hooks contains user-defined lifecycle hook commands.
 	Hooks *HooksConfig
+
+	// RemapUser is the in-container username whose UID/GID should be remapped
+	// to RemapUID/RemapGID at image build time. Empty means no remap.
+	// Used by devcontainer mode on Linux so that files inside the workspace
+	// mount remain owned by the host workspace owner.
+	RemapUser string
+	RemapUID  int
+	RemapGID  int
 }
 
 // NeedsCustomImage reports whether any option requires building a custom image.
@@ -69,7 +77,7 @@ func (s *ImageSpec) NeedsCustomImage(hasDeps bool) bool {
 	hasHooks := s.Hooks != nil && (s.Hooks.PostBuild != "" || s.Hooks.PostBuildRoot != "" || s.Hooks.PreRun != "")
 	return hasDeps || s.BaseImage != "" || s.NeedsSSH || len(s.InitProviders) > 0 ||
 		s.NeedsFirewall || s.NeedsInitFiles || s.NeedsClipboard ||
-		len(s.ClaudePlugins) > 0 || hasHooks
+		len(s.ClaudePlugins) > 0 || hasHooks || s.RemapUser != ""
 }
 
 // needsInit returns whether the moat-init entrypoint script is required.
