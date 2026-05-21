@@ -6,6 +6,16 @@ Moat is pre-1.0. The CLI interface and `moat.yaml` schema may change between min
 
 ## Unreleased
 
+### Added
+
+- **Devcontainer support** — Workspaces with a `.devcontainer/devcontainer.json`
+  now run under moat without additional configuration. Moat uses the
+  devcontainer's image, user, `workspaceFolder`, environment, mounts, and
+  lifecycle hooks (`initializeCommand`, `onCreateCommand`, `postCreateCommand`,
+  `postStartCommand`). Moat.yaml's `base_image:` and `dependencies:` continue
+  to take precedence when present. See
+  [guides/devcontainer](https://majorcontext.com/moat/guides/devcontainer).
+
 ## v0.5.1 — 2026-04-28
 
 Patch release with one security fix (IPv6 egress firewall) and a batch of run-lifecycle and proxy fixes. Adds `MOAT_HOME` for relocating moat state, a multi-runtime manager so Docker and Apple containers can coexist in one install, TUI debug shortcuts, and Python 3.13/3.14 support. Gatekeeper is extracted to its own repository.
