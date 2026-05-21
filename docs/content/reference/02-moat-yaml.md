@@ -11,6 +11,60 @@ The `moat.yaml` file configures how Moat runs your agent. Place it in your works
 
 > **Backwards compatibility:** `agent.yaml` is still supported as a fallback. If `moat.yaml` is not found, Moat looks for `agent.yaml` in the same directory. New projects should use `moat.yaml`.
 
+## Defaults
+
+A per-user defaults file at `~/.moat/defaults.yaml` (or `$MOAT_HOME/defaults.yaml` when `MOAT_HOME` is set) applies to every project run on the host. Its schema is identical to `moat.yaml`.
+
+When Moat loads configuration, it reads `defaults.yaml` first, then reads the project `moat.yaml`, and merges the two. The merge rules are:
+
+- **Scalars**: project value wins when set; defaults fills in missing fields.
+- **Maps** (`env`, `secrets`, `ports`, etc.): merged per key; project wins per key.
+- **Slices** (`grants`, `dependencies`, `language_servers`): union with deduplicate; defaults entries appear first, then project-only entries appended.
+- **Struct slices** (`mounts`, `volumes`, `mcp`): union keyed by (source, target) or name; project wins on collision.
+
+### Example
+
+```yaml
+# ~/.moat/defaults.yaml
+agent: claude
+grants:
+  - aws
+env:
+  AWS_REGION: us-east-1
+claude:
+  base_url: https://default.example
+```
+
+```yaml
+# moat.yaml (project)
+grants:
+  - github
+env:
+  AWS_REGION: us-west-2
+claude:
+  base_url: https://project.example
+```
+
+```yaml
+# Resolved (what `moat config show` prints)
+agent: claude
+grants:
+    - aws
+    - github
+env:
+    AWS_REGION: us-west-2
+claude:
+    base_url: https://project.example
+```
+
+Use `moat config show` to inspect the resolved configuration for any project. Use `moat config show --source` to see a comment on each line indicating whether the value came from `defaults`, `project`, or a merge of both.
+
+### Security trade-off
+
+Defaults make container behavior depend on host-side state outside the project repository. A project behaves differently on different machines if their `defaults.yaml` files differ. Use `moat config show --source` to make this visible: each line shows whether the value came from the project or from your local defaults, so reviewers can audit exactly which settings are host-supplied. Defaults are read-only at run time; there is no mechanism for a container to modify `defaults.yaml`.
+
+---
+
 ## Complete example
 
 ```yaml
@@ -1696,6 +1750,7 @@ When the same option is specified in multiple places:
 
 1. CLI flags (highest priority)
 2. `moat.yaml` values
-3. Default values (lowest priority)
+3. `~/.moat/defaults.yaml` values
+4. Built-in defaults (lowest priority)
 
-For additive options (`--grant`, `-e`, `--mount`), CLI values are merged with `moat.yaml` values.
+For additive options (`--grant`, `-e`, `--mount`), CLI values are merged with `moat.yaml` values. See the [Defaults](#defaults) section for how `moat.yaml` and `defaults.yaml` are merged.

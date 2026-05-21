@@ -1426,6 +1426,67 @@ moat proxy status
 
 ---
 
+## moat config
+
+Inspect Moat configuration.
+
+### moat config show
+
+Print the resolved configuration for a project workspace.
+
+```
+moat config show [flags]
+```
+
+By default, the project `moat.yaml` is merged with `~/.moat/defaults.yaml` (or `$MOAT_HOME/defaults.yaml`). The resolved result is printed as YAML.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--source` | Annotate each line with its source: `# project`, `# defaults`, or `# merged` |
+| `--workspace PATH` | Inspect a project at a non-current-directory path |
+| `--no-defaults` | Print the project-only config without merging `defaults.yaml` |
+
+#### Examples
+
+```bash
+# Print resolved config for the current project
+moat config show
+
+# Show where each value came from
+moat config show --source
+
+# Inspect a specific project directory
+moat config show --workspace ./my-project
+
+# Print only what the project moat.yaml specifies (no defaults)
+moat config show --no-defaults
+```
+
+#### --source output
+
+With `--source`, each line carries a trailing comment:
+
+- `# project` — value comes from the project `moat.yaml`
+- `# defaults` — value comes from `~/.moat/defaults.yaml`
+- `# merged` — value is the union of both (for maps and slices where both sides contributed)
+
+For example:
+
+```yaml
+agent: claude  # defaults
+grants:
+    - aws  # defaults
+    - github  # project
+env:
+    AWS_REGION: us-west-2  # project
+claude:
+    base_url: https://project.example  # project
+```
+
+---
+
 ## moat deps
 
 Manage dependencies. See [Dependencies](./06-dependencies.md) for details on the dependency system.
