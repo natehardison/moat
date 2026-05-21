@@ -2005,3 +2005,82 @@ func TestManager_DevcontainerPrecedence(t *testing.T) {
 		})
 	}
 }
+
+// TestRegisterPersistedRunRestoresDevcontainerFields verifies that all seven
+// devcontainer lifecycle hook fields survive a save/load round-trip through
+// storage.Metadata and registerPersistedRun.
+func TestRegisterPersistedRunRestoresDevcontainerFields(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("MOAT_HOME", "")
+
+	baseDir := filepath.Join(tmpHome, ".moat", "runs")
+	runID := "run_dc_persist_01"
+	store, err := storage.NewRunStore(baseDir, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.SaveMetadata(storage.Metadata{
+		Name:             "dc-agent",
+		ContainerID:      "container-dc01",
+		State:            "stopped",
+		Workspace:        "/tmp/ws",
+		CreatedAt:        time.Now().Add(-1 * time.Hour),
+		DevcontainerHash: "abc123hash",
+		OnCreateCmd:      "echo oncreate",
+		PostCreateCmd:    "npm install",
+		PostStartCmd:     "npm run dev",
+		PostStartUser:    "node",
+		PostStartHome:    "/home/node",
+		PostStartWorkdir: "/workspace/app",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routeDir := filepath.Join(tmpHome, ".moat", "routes")
+	routes, err := routing.NewRouteTable(routeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{
+		runtimePool: container.NewRuntimePoolWithDefault(&stubRuntime{
+			states: map[string]string{"container-dc01": "exited"},
+		}),
+		runs:   make(map[string]*Run),
+		routes: routes,
+	}
+
+	if err := m.loadPersistedRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	r, ok := m.runs[runID]
+	if !ok {
+		t.Fatalf("run %s not loaded", runID)
+	}
+
+	if r.DevcontainerHash != "abc123hash" {
+		t.Errorf("DevcontainerHash: got %q, want %q", r.DevcontainerHash, "abc123hash")
+	}
+	if r.OnCreateCmd != "echo oncreate" {
+		t.Errorf("OnCreateCmd: got %q, want %q", r.OnCreateCmd, "echo oncreate")
+	}
+	if r.PostCreateCmd != "npm install" {
+		t.Errorf("PostCreateCmd: got %q, want %q", r.PostCreateCmd, "npm install")
+	}
+	if r.PostStartCmd != "npm run dev" {
+		t.Errorf("PostStartCmd: got %q, want %q", r.PostStartCmd, "npm run dev")
+	}
+	if r.PostStartUser != "node" {
+		t.Errorf("PostStartUser: got %q, want %q", r.PostStartUser, "node")
+	}
+	if r.PostStartHome != "/home/node" {
+		t.Errorf("PostStartHome: got %q, want %q", r.PostStartHome, "/home/node")
+	}
+	if r.PostStartWorkdir != "/workspace/app" {
+		t.Errorf("PostStartWorkdir: got %q, want %q", r.PostStartWorkdir, "/workspace/app")
+	}
+}

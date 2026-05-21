@@ -203,6 +203,13 @@ func (r *Run) SaveMetadata() error {
 		BuildkitContainerID: r.BuildkitContainerID,
 		NetworkID:           r.NetworkID,
 		ServiceContainers:   r.ServiceContainers,
+		DevcontainerHash:    r.DevcontainerHash,
+		OnCreateCmd:         r.OnCreateCmd,
+		PostCreateCmd:       r.PostCreateCmd,
+		PostStartCmd:        r.PostStartCmd,
+		PostStartUser:       r.PostStartUser,
+		PostStartHome:       r.PostStartHome,
+		PostStartWorkdir:    r.PostStartWorkdir,
 	})
 }
 

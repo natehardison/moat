@@ -485,6 +485,13 @@ func (m *Manager) registerPersistedRun(runState State, stateConfirmed bool, skip
 		WorktreeBranch:    meta.WorktreeBranch,
 		WorktreePath:      meta.WorktreePath,
 		WorktreeRepoID:    meta.WorktreeRepoID,
+		DevcontainerHash:  meta.DevcontainerHash,
+		OnCreateCmd:       meta.OnCreateCmd,
+		PostCreateCmd:     meta.PostCreateCmd,
+		PostStartCmd:      meta.PostStartCmd,
+		PostStartUser:     meta.PostStartUser,
+		PostStartHome:     meta.PostStartHome,
+		PostStartWorkdir:  meta.PostStartWorkdir,
 	}
 
 	// If container is confirmed stopped by a live check or by authoritative
