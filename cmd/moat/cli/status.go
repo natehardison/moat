@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/moat/internal/container"
+	"github.com/majorcontext/moat/internal/devcontainer"
 	"github.com/majorcontext/moat/internal/log"
 	"github.com/majorcontext/moat/internal/run"
 	"github.com/majorcontext/moat/internal/storage"
@@ -260,6 +262,11 @@ func showStatus(cmd *cobra.Command, args []string) error {
 				r.Name, r.ID, rtLabel, r.Age, diskStr, r.Endpoints)
 		}
 		w.Flush()
+
+		// Drift hint: check if any active run's devcontainer.json has changed
+		// since the run was created. Only runs that recorded a DevcontainerHash
+		// (i.e., started with a devcontainer) are checked.
+		writeDriftHints(os.Stdout, activeRuns)
 	}
 	fmt.Println()
 
@@ -295,6 +302,20 @@ func showStatus(cmd *cobra.Command, args []string) error {
 	fmt.Println("  moat system containers   List all containers")
 
 	return nil
+}
+
+// writeDriftHints checks active runs for devcontainer.json changes and writes
+// a hint line to w for any run whose devcontainer has drifted since creation.
+func writeDriftHints(w io.Writer, activeRuns []*run.Run) {
+	for _, r := range activeRuns {
+		if r.DevcontainerHash == "" {
+			continue
+		}
+		cur, err := devcontainer.ContentHash(r.Workspace)
+		if err == nil && cur != r.DevcontainerHash {
+			fmt.Fprintf(w, "  hint: devcontainer.json changed for %q; run `moat run --rebuild` to apply\n", r.Name)
+		}
+	}
 }
 
 func formatAge(t time.Time) string {
