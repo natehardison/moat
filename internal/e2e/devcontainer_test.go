@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -148,5 +149,69 @@ func TestE2E_DevcontainerDockerfileBuild(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("custom binary moat-marker missing from built container\nLogs:%s", formatLogEntries(logs))
+	}
+}
+
+// TestE2E_DevcontainerFullLifecycle verifies that all four devcontainer lifecycle
+// commands execute at the correct stage:
+//
+//   - initializeCommand  — runs on the host before the container starts; creates
+//     initialize.host in the workspace directory.
+//   - onCreateCommand    — runs inside the container once after creation; creates
+//     onCreate.in in the container workspace folder (mounted from host).
+//   - postCreateCommand  — runs inside the container after creation (same as above
+//     for moat's single-start model); creates postCreate.in.
+//   - postStartCommand   — runs inside the container every time the container
+//     starts; creates postStart.in.
+//
+// All marker files are visible from the host via the workspace bind-mount.
+func TestE2E_DevcontainerFullLifecycle(t *testing.T) {
+	requireDocker(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	workspace := copyDevcontainerFixture(t, "devcontainer/full-lifecycle")
+
+	mgr, err := run.NewManagerWithOptions(run.ManagerOptions{NoSandbox: &[]bool{true}[0]})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	r, err := mgr.Create(ctx, run.Options{
+		Name:      "e2e-dc-full-lifecycle",
+		Workspace: workspace,
+		Cmd:       []string{"true"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer mgr.Destroy(context.Background(), r.ID)
+
+	if err := mgr.Start(ctx, r.ID, run.StartOptions{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := mgr.Wait(ctx, r.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	// Give storage and filesystem time to flush.
+	time.Sleep(100 * time.Millisecond)
+
+	// All markers must be visible from the host workspace directory because the
+	// workspace is bind-mounted into the container.
+	markers := []string{
+		"initialize.host", // created by initializeCommand on the host
+		"onCreate.in",     // created by onCreateCommand inside the container
+		"postCreate.in",   // created by postCreateCommand inside the container
+		"postStart.in",    // created by postStartCommand inside the container
+	}
+	for _, m := range markers {
+		path := filepath.Join(workspace, m)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("lifecycle marker %q missing at %s: %v", m, path, err)
+		}
 	}
 }
