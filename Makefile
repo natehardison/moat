@@ -1,4 +1,6 @@
-.PHONY: all help build test test-unit test-e2e test-bats lint fix clean coverage snapshot
+.PHONY: all help build build-cli install test test-unit test-e2e test-bats lint fix clean coverage snapshot
+
+PREFIX ?= $(HOME)/.local
 
 # Default target - running "make" shows help
 all: help
@@ -20,6 +22,11 @@ build: ## Build the project
 
 build-cli: ## Build the CLI binary ./moat
 	go build -ldflags "-s -w -X github.com/majorcontext/moat/cmd/moat/cli.version=dev -X github.com/majorcontext/moat/cmd/moat/cli.commit=$$(git rev-parse --short HEAD) -X github.com/majorcontext/moat/cmd/moat/cli.date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o moat ./cmd/moat
+
+install: build-cli ## Install moat to $(PREFIX)/bin (default ~/.local/bin)
+	install -d $(PREFIX)/bin
+	install -m 755 moat $(PREFIX)/bin/moat
+	@echo "installed: $(PREFIX)/bin/moat"
 
 test: test-unit test-e2e test-bats ## Run all tests (unit + E2E + hooks)
 
