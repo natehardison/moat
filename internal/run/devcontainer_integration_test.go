@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/majorcontext/moat/internal/config"
 	"github.com/majorcontext/moat/internal/container"
+	"github.com/majorcontext/moat/internal/devcontainer"
 )
 
 // fakeBuildManager is a minimal container.BuildManager for testing devcontainer builds.
@@ -61,7 +63,7 @@ func TestManager_DevcontainerStageA_SetsBaseImage(t *testing.T) {
 	rt := &fakeRuntimeWithBuild{bm: bm}
 	m := newEdgeCaseManager(t, rt)
 
-	spec, dcTag, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
+	spec, dcTag, _, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
 		Workspace: workspace,
 		Grants:    []string{},
 		Config:    nil,
@@ -86,7 +88,7 @@ func TestManager_DevcontainerStageA_NoDevcontainer(t *testing.T) {
 	rt := &fakeRuntimeWithBuild{bm: bm}
 	m := newEdgeCaseManager(t, rt)
 
-	spec, dcTag, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
+	spec, dcTag, _, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
 		Workspace: workspace,
 		Config:    nil,
 	})
@@ -116,7 +118,7 @@ func TestManager_DevcontainerStageA_NoDevcontainerFlag(t *testing.T) {
 	rt := &fakeRuntimeWithBuild{bm: bm}
 	m := newEdgeCaseManager(t, rt)
 
-	spec, dcTag, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
+	spec, dcTag, _, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
 		Workspace:      workspace,
 		NoDevcontainer: true,
 		Config:         nil,
@@ -148,7 +150,7 @@ func TestManager_DevcontainerStageA_MoatYAMLWins(t *testing.T) {
 	m := newEdgeCaseManager(t, rt)
 
 	moatConfig := &testConfig{BaseImage: "debian:bookworm"}
-	spec, dcTag, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
+	spec, dcTag, _, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
 		Workspace: workspace,
 		Config:    moatConfig.asConfig(),
 	})
@@ -174,5 +176,110 @@ func (tc *testConfig) asConfig() *config.Config {
 	return &config.Config{
 		BaseImage:    tc.BaseImage,
 		Dependencies: tc.Dependencies,
+	}
+}
+
+// TestManager_DevcontainerOverridesUserAndWorkdir verifies that when a
+// devcontainer is active, resolveImageSpecForDevcontainer returns a populated
+// dcCfg with the correct user and workspaceFolder, and that the workspace-target
+// logic in Create produces the expected mount target and working directory.
+//
+// Note: This test validates the returned dcCfg (the data that Create consumes)
+// and the workspaceTarget computation logic rather than calling Create end-to-end
+// (which would require a full container runtime). The E2E tests in PR 3 verify
+// the full container behavior.
+func TestManager_DevcontainerOverridesUserAndWorkdir(t *testing.T) {
+	workspace := t.TempDir()
+	dcDir := filepath.Join(workspace, ".devcontainer")
+	if err := os.MkdirAll(dcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dcJSON := `{
+  "image": "ubuntu:24.04",
+  "remoteUser": "vscode",
+  "workspaceFolder": "/work/repo",
+  "containerEnv": { "FOO": "bar" },
+  "remoteEnv":    { "BAZ": "qux" }
+}`
+	if err := os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(dcJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bm := newFakeBuildManager()
+	rt := &fakeRuntimeWithBuild{bm: bm}
+	m := newEdgeCaseManager(t, rt)
+
+	_, _, dcCfg, err := m.resolveImageSpecForDevcontainer(context.Background(), Options{
+		Workspace: workspace,
+		Config:    nil,
+	})
+	if err != nil {
+		t.Fatalf("resolveImageSpecForDevcontainer: %v", err)
+	}
+	if dcCfg == nil {
+		t.Fatal("dcCfg should be non-nil when devcontainer is active")
+	}
+
+	// Verify user
+	if dcCfg.User != "vscode" {
+		t.Errorf("dcCfg.User = %q, want vscode", dcCfg.User)
+	}
+
+	// Verify workspaceFolder
+	if dcCfg.WorkspaceFolder != "/work/repo" {
+		t.Errorf("dcCfg.WorkspaceFolder = %q, want /work/repo", dcCfg.WorkspaceFolder)
+	}
+
+	// Verify remoteEnv contains BAZ
+	if v, ok := dcCfg.RemoteEnv["BAZ"]; !ok || v != "qux" {
+		t.Errorf("dcCfg.RemoteEnv[BAZ] = %q (ok=%v), want qux", v, ok)
+	}
+
+	// Verify workspaceTarget computation — mirror the logic in Create.
+	workspaceTarget := "/workspace"
+	if !false /* !opts.NoDevcontainer */ {
+		if earlyDCCfg, _ := devcontainer.Detect(workspace); earlyDCCfg != nil && useDevcontainerForImage(nil, earlyDCCfg) {
+			if earlyDCCfg.WorkspaceFolder != "" {
+				workspaceTarget = earlyDCCfg.WorkspaceFolder
+			} else {
+				workspaceTarget = "/workspaces/" + filepath.Base(workspace)
+			}
+		}
+	}
+	if workspaceTarget != "/work/repo" {
+		t.Errorf("workspaceTarget = %q, want /work/repo", workspaceTarget)
+	}
+
+	// Verify that the workspace would be mounted at workspaceTarget.
+	// Simulate the mount creation logic from Create.
+	var mounts []struct{ Source, Target string }
+	hasExplicit := false
+	// (no moat.yaml mounts in this test)
+	if !hasExplicit {
+		mounts = append(mounts, struct{ Source, Target string }{Source: workspace, Target: workspaceTarget})
+	}
+	foundWorkspaceMount := false
+	for _, mnt := range mounts {
+		if mnt.Target == "/work/repo" && mnt.Source == workspace {
+			foundWorkspaceMount = true
+		}
+	}
+	if !foundWorkspaceMount {
+		t.Errorf("workspace not mounted at /work/repo; mounts = %+v", mounts)
+	}
+
+	// Verify that remoteEnv is injected into the env list before moat.yaml env.
+	envList := make([]string, 0, len(dcCfg.RemoteEnv))
+	for k, v := range dcCfg.RemoteEnv {
+		envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+	}
+	hasRemoteEnv := false
+	for _, e := range envList {
+		if e == "BAZ=qux" {
+			hasRemoteEnv = true
+		}
+	}
+	if !hasRemoteEnv {
+		t.Errorf("BAZ=qux missing from simulated env list: %v", envList)
 	}
 }

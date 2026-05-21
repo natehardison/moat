@@ -567,7 +567,8 @@ func useDevcontainerForImage(cfg *config.Config, dc *devcontainer.Config) bool {
 // resolveImageSpecForDevcontainer detects the devcontainer configuration,
 // applies precedence rules (moat.yaml base_image/dependencies beat devcontainer),
 // runs the devcontainer Stage A build when applicable, and returns the
-// partially-populated ImageSpec together with the devcontainer base tag.
+// partially-populated ImageSpec together with the devcontainer base tag and
+// the parsed devcontainer config (nil when not used).
 //
 // The returned ImageSpec has BaseImage set (either from moat.yaml or from
 // the Stage A devcontainer build) and RemapUser/UID/GID set on Linux when
@@ -576,12 +577,13 @@ func useDevcontainerForImage(cfg *config.Config, dc *devcontainer.Config) bool {
 // for the caller (Create) to fill in after resolving runtime context.
 //
 // dcBaseTag is empty when no devcontainer is used.
-func (m *Manager) resolveImageSpecForDevcontainer(ctx context.Context, opts Options) (*deps.ImageSpec, string, error) {
+// dcCfg is nil when no devcontainer is used (or when opts.NoDevcontainer is set).
+func (m *Manager) resolveImageSpecForDevcontainer(ctx context.Context, opts Options) (*deps.ImageSpec, string, *devcontainer.Config, error) {
 	// Detect devcontainer.json and apply precedence rule:
 	// moat.yaml base_image or dependencies win over devcontainer.
 	dcCfg, dcErr := devcontainer.Detect(opts.Workspace)
 	if dcErr != nil {
-		return nil, "", fmt.Errorf("parse devcontainer.json: %w", dcErr)
+		return nil, "", nil, fmt.Errorf("parse devcontainer.json: %w", dcErr)
 	}
 	if opts.NoDevcontainer {
 		dcCfg = nil
@@ -597,15 +599,15 @@ func (m *Manager) resolveImageSpecForDevcontainer(ctx context.Context, opts Opti
 	if useDC {
 		// Stage A: run initializeCommand, build base image, bake containerEnv overlay.
 		if err := devcontainer.RunInitializeCommand(ctx, dcCfg.InitializeCmd, opts.Workspace); err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		bm := m.defaultRuntime().BuildManager()
 		if bm == nil {
-			return nil, "", fmt.Errorf("runtime %s does not support image building (needed for devcontainer)", m.defaultRuntime().Type())
+			return nil, "", nil, fmt.Errorf("runtime %s does not support image building (needed for devcontainer)", m.defaultRuntime().Type())
 		}
 		tag, err := devcontainer.BuildBase(ctx, bm, opts.Workspace, dcCfg, devcontainer.BuildOptions{NoCache: opts.Rebuild})
 		if err != nil {
-			return nil, "", fmt.Errorf("building devcontainer base: %w", err)
+			return nil, "", nil, fmt.Errorf("building devcontainer base: %w", err)
 		}
 		dcBaseTag = tag
 	}
@@ -627,7 +629,15 @@ func (m *Manager) resolveImageSpecForDevcontainer(ctx context.Context, opts Opti
 		spec.RemapGID = gid
 	}
 
-	return spec, dcBaseTag, nil
+	// Return dcCfg only when the devcontainer is actually being used for the image.
+	// When useDC is false, dcCfg may still be non-nil (detected but overridden by
+	// moat.yaml), but we don't apply devcontainer runtime overrides in that case.
+	var activeDCCfg *devcontainer.Config
+	if useDC {
+		activeDCCfg = dcCfg
+	}
+
+	return spec, dcBaseTag, activeDCCfg, nil
 }
 
 // Create initializes a new run without starting it.
@@ -734,12 +744,32 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 	var mounts []container.MountConfig
 	var tmpfsMounts []container.TmpfsMount
 
-	// Check if any config mount explicitly targets /workspace.
+	// Determine the workspace mount target and capture devcontainer remote env
+	// early. When a devcontainer is active, use its workspaceFolder (default:
+	// /workspaces/<basename>) and remoteEnv. We do a quick Detect here (before
+	// Stage A build) so that mount/workdir/env logic has the values early.
+	// resolveImageSpecForDevcontainer re-uses the same detection later.
+	workspaceTarget := "/workspace"
+	var earlyDCRemoteEnv map[string]string // devcontainer remoteEnv (nil when not active)
+	if !opts.NoDevcontainer {
+		if earlyDCCfg, _ := devcontainer.Detect(opts.Workspace); earlyDCCfg != nil && useDevcontainerForImage(opts.Config, earlyDCCfg) {
+			if earlyDCCfg.WorkspaceFolder != "" {
+				workspaceTarget = earlyDCCfg.WorkspaceFolder
+			} else {
+				workspaceTarget = "/workspaces/" + filepath.Base(opts.Workspace)
+			}
+			if len(earlyDCCfg.RemoteEnv) > 0 {
+				earlyDCRemoteEnv = earlyDCCfg.RemoteEnv
+			}
+		}
+	}
+
+	// Check if any config mount explicitly targets the workspace target.
 	// If so, skip the implicit workspace mount (the explicit one replaces it).
 	hasExplicitWorkspace := false
 	if opts.Config != nil {
 		for _, me := range opts.Config.Mounts {
-			if me.Target == "/workspace" {
+			if me.Target == workspaceTarget {
 				hasExplicitWorkspace = true
 				break
 			}
@@ -750,7 +780,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 	if !hasExplicitWorkspace {
 		mounts = append(mounts, container.MountConfig{
 			Source:   opts.Workspace,
-			Target:   "/workspace",
+			Target:   workspaceTarget,
 			ReadOnly: false,
 		})
 	}
@@ -1528,6 +1558,12 @@ region = %s
 		extraHosts = append(extraHosts, synthHosts...)
 	}
 
+	// Inject devcontainer remoteEnv before moat.yaml env so that moat.yaml
+	// values take precedence (last-appended wins when env vars are duplicated).
+	for k, v := range earlyDCRemoteEnv {
+		proxyEnv = append(proxyEnv, fmt.Sprintf("%s=%s", k, v))
+	}
+
 	// Add config env vars, filtering out proxy-related variables that would
 	// override moat's proxy settings and re-open the host traffic bypass.
 	if opts.Config != nil {
@@ -1830,12 +1866,34 @@ region = %s
 	// confuses legacy parser line counting, causing "unknown instruction" errors).
 	useBuildKit := os.Getenv("BUILDKIT_HOST") != "" && os.Getenv("MOAT_DISABLE_BUILDKIT") != "1"
 
-	imageSpec, _, specErr := m.resolveImageSpecForDevcontainer(ctx, opts)
+	imageSpec, _, activeDCCfg, specErr := m.resolveImageSpecForDevcontainer(ctx, opts)
 	if specErr != nil {
 		cleanupDaemonRun()
 		cleanupSSH(sshServer)
 		return nil, specErr
 	}
+	useDC := activeDCCfg != nil
+
+	// Apply devcontainer extra mounts from the devcontainer.json `mounts:` field.
+	// These are appended after moat.yaml mounts; if a target collides, log a warning.
+	if useDC {
+		for _, dcMount := range activeDCCfg.Mounts {
+			// Check for collision with an existing mount target and log a warning.
+			for _, existing := range mounts {
+				if existing.Target == dcMount.Target {
+					log.Warn("devcontainer mount target collides with existing mount; devcontainer entry takes precedence",
+						"target", dcMount.Target)
+					break
+				}
+			}
+			mounts = append(mounts, container.MountConfig{
+				Source:   dcMount.Source,
+				Target:   dcMount.Target,
+				ReadOnly: dcMount.ReadOnly,
+			})
+		}
+	}
+
 	// Fill in the fields that depend on runtime context built above.
 	imageSpec.NeedsSSH = hasSSHGrants
 	imageSpec.SSHHosts = sshGrants
@@ -2368,7 +2426,13 @@ region = %s
 	// translation automatically, so we can use the default moatuser (5000).
 	const moatuserUID = 5000
 	var containerUser string
-	if goruntime.GOOS == "linux" {
+	if useDC && activeDCCfg.User != "" {
+		// When a devcontainer is active, use the devcontainer's user (e.g., "vscode").
+		// On Linux, resolveImageSpecForDevcontainer already baked UID/GID remapping
+		// into the image so the username resolves to the workspace owner's UID.
+		containerUser = activeDCCfg.User
+		log.Debug("using devcontainer user for container", "user", activeDCCfg.User)
+	} else if goruntime.GOOS == "linux" {
 		// Use the workspace owner's UID/GID, not the process UID.
 		// This handles cases where moat is run with sudo or as a different user.
 		workspaceUID, workspaceGID := getWorkspaceOwner(opts.Workspace)
@@ -2379,7 +2443,7 @@ region = %s
 		}
 		// If workspace owner UID is 5000, we can use the image's default moatuser
 	}
-	// On macOS/Windows, leave containerUser empty to use the image default (moatuser)
+	// On macOS/Windows without devcontainer, leave containerUser empty to use image default (moatuser)
 
 	// Determine if container needs privileged mode (only for docker:dind)
 	var privileged bool
@@ -2816,7 +2880,7 @@ region = %s
 		Name:         r.ID,
 		Image:        containerImage,
 		Cmd:          cmd,
-		WorkingDir:   "/workspace",
+		WorkingDir:   workspaceTarget,
 		Env:          proxyEnv,
 		User:         containerUser,
 		ExtraHosts:   extraHosts,
@@ -2855,6 +2919,20 @@ region = %s
 
 	r.ContainerID = containerID
 	r.SSHAgentServer = sshServer
+
+	// Persist devcontainer-derived fields on the Run so that moat exec, status
+	// drift detection, and post-start command execution have the right context.
+	if useDC {
+		r.PostStartCmd = activeDCCfg.PostStartCmd
+		r.PostStartUser = activeDCCfg.User
+		r.PostStartHome = activeDCCfg.Home
+		r.PostStartWorkdir = workspaceTarget
+		if hash, hashErr := devcontainer.ContentHash(opts.Workspace); hashErr == nil {
+			r.DevcontainerHash = hash
+		} else {
+			log.Debug("failed to hash devcontainer content", "error", hashErr)
+		}
+	}
 
 	// Update daemon with the container ID (phase 2 of registration)
 	if r.ProxyAuthToken != "" && m.daemonClient != nil {
