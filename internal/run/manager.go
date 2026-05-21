@@ -3191,14 +3191,23 @@ func (m *Manager) runDevcontainerLifecycleHooks(ctx context.Context, r *Run) err
 		Workdir: r.PostStartWorkdir,
 		Env:     probedEnv,
 	}
-	if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "onCreate", r.OnCreateCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
-		return fmt.Errorf("onCreateCommand failed: %w", err)
+	if r.OnCreateCmd != "" {
+		if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "onCreate", r.OnCreateCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+			return fmt.Errorf("onCreateCommand failed: %w", err)
+		}
+		r.OnCreateCmd = "" // one-shot: don't re-run on restart
 	}
-	if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "postCreate", r.PostCreateCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
-		return fmt.Errorf("postCreateCommand failed: %w", err)
+	if r.PostCreateCmd != "" {
+		if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "postCreate", r.PostCreateCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+			return fmt.Errorf("postCreateCommand failed: %w", err)
+		}
+		r.PostCreateCmd = "" // one-shot: don't re-run on restart
 	}
-	if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "postStart", r.PostStartCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
-		ui.Warnf("postStartCommand failed: %v", err)
+	// postStart runs every start; do not clear.
+	if r.PostStartCmd != "" {
+		if err := devcontainer.RunHook(ctx, rt, r.ContainerID, "postStart", r.PostStartCmd, hookOpts, os.Stderr, os.Stderr); err != nil {
+			ui.Warnf("postStartCommand failed: %v", err)
+		}
 	}
 	return nil
 }

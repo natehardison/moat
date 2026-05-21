@@ -421,6 +421,16 @@ func TestRunDevcontainerLifecycleHooks(t *testing.T) {
 		if !reflect.DeepEqual(seen, want) {
 			t.Errorf("hook order = %v, want %v", seen, want)
 		}
+		// Verify one-shot clearing.
+		if r.OnCreateCmd != "" {
+			t.Errorf("OnCreateCmd not cleared after run: %q", r.OnCreateCmd)
+		}
+		if r.PostCreateCmd != "" {
+			t.Errorf("PostCreateCmd not cleared after run: %q", r.PostCreateCmd)
+		}
+		if r.PostStartCmd == "" {
+			t.Errorf("PostStartCmd must NOT be cleared (runs every start)")
+		}
 	})
 
 	t.Run("no hooks is noop", func(t *testing.T) {
@@ -500,4 +510,67 @@ func TestRunDevcontainerLifecycleHooks(t *testing.T) {
 			t.Fatalf("postStart failure should warn-and-continue, got error: %v", err)
 		}
 	})
+}
+
+// TestRunDevcontainerLifecycleHooks_OnCreatePostCreateAreOneShot verifies that
+// onCreate and postCreate run only on the first invocation (cleared after success)
+// while postStart runs on every invocation.
+func TestRunDevcontainerLifecycleHooks_OnCreatePostCreateAreOneShot(t *testing.T) {
+	var calls []string
+	rt := &fakeRuntimeWithBuild{
+		flexibleRuntime: flexibleRuntime{
+			execFn: func(_ context.Context, _ string, cmd []string, _ []byte, _ io.Writer, _ io.Writer) error {
+				joined := strings.Join(cmd, " ")
+				switch {
+				case strings.Contains(joined, "echo onCreate"):
+					calls = append(calls, "onCreate")
+				case strings.Contains(joined, "echo postCreate"):
+					calls = append(calls, "postCreate")
+				case strings.Contains(joined, "echo postStart"):
+					calls = append(calls, "postStart")
+				}
+				return nil
+			},
+		},
+		bm: newFakeBuildManager(),
+	}
+	m := newEdgeCaseManager(t, rt)
+	r := &Run{
+		ID:               "run_oneshot",
+		ContainerID:      "ctr-oneshot",
+		OnCreateCmd:      "echo onCreate",
+		PostCreateCmd:    "echo postCreate",
+		PostStartCmd:     "echo postStart",
+		PostStartUser:    "vscode",
+		PostStartHome:    "/home/vscode",
+		PostStartWorkdir: "/workspaces/repo",
+	}
+
+	// First invocation: all three hooks fire.
+	if err := m.runDevcontainerLifecycleHooks(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	wantFirst := []string{"onCreate", "postCreate", "postStart"}
+	if !reflect.DeepEqual(calls, wantFirst) {
+		t.Errorf("first call = %v, want %v", calls, wantFirst)
+	}
+	if r.OnCreateCmd != "" {
+		t.Errorf("OnCreateCmd not cleared: %q", r.OnCreateCmd)
+	}
+	if r.PostCreateCmd != "" {
+		t.Errorf("PostCreateCmd not cleared: %q", r.PostCreateCmd)
+	}
+	if r.PostStartCmd == "" {
+		t.Errorf("PostStartCmd should NOT be cleared")
+	}
+
+	// Second invocation (simulating restart): only postStart fires.
+	calls = nil
+	if err := m.runDevcontainerLifecycleHooks(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	wantSecond := []string{"postStart"}
+	if !reflect.DeepEqual(calls, wantSecond) {
+		t.Errorf("second call = %v, want %v (only postStart should fire)", calls, wantSecond)
+	}
 }
