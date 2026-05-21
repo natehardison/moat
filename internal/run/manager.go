@@ -31,6 +31,7 @@ import (
 	"github.com/majorcontext/moat/internal/credential"
 	"github.com/majorcontext/moat/internal/daemon"
 	"github.com/majorcontext/moat/internal/deps"
+	"github.com/majorcontext/moat/internal/devcontainer"
 	"github.com/majorcontext/moat/internal/hostnames"
 	"github.com/majorcontext/moat/internal/id"
 	"github.com/majorcontext/moat/internal/image"
@@ -548,6 +549,19 @@ func resolveBaseImage(cfg *config.Config) string {
 		return ""
 	}
 	return cfg.BaseImage
+}
+
+// useDevcontainerForImage returns true when the devcontainer should drive
+// the base image. moat.yaml's base_image: or dependencies: take precedence;
+// otherwise the devcontainer wins.
+func useDevcontainerForImage(cfg *config.Config, dc *devcontainer.Config) bool {
+	if dc == nil {
+		return false
+	}
+	if cfg == nil {
+		return true
+	}
+	return cfg.BaseImage == "" && len(cfg.Dependencies) == 0
 }
 
 // Create initializes a new run without starting it.
@@ -1738,6 +1752,22 @@ region = %s
 			PreRun:        opts.Config.Hooks.PreRun,
 		}
 	}
+
+	// Detect devcontainer.json and apply precedence rule:
+	// moat.yaml base_image or dependencies win over devcontainer.
+	dcCfg, dcErr := devcontainer.Detect(opts.Workspace)
+	if dcErr != nil {
+		return nil, fmt.Errorf("parse devcontainer.json: %w", dcErr)
+	}
+	if opts.NoDevcontainer {
+		dcCfg = nil
+	}
+	useDC := useDevcontainerForImage(opts.Config, dcCfg)
+	if dcCfg != nil && !useDC && (opts.Config != nil && (opts.Config.BaseImage != "" || len(opts.Config.Dependencies) > 0)) {
+		ui.Warnf("devcontainer.json detected but ignored: moat.yaml specifies base_image or dependencies")
+	}
+	_ = useDC // consumed in Task 2.6 (Stage A build + ImageSpec wiring)
+	_ = dcCfg // same
 
 	// Build the image spec — single source of truth for image resolution,
 	// tag generation, and Dockerfile generation.

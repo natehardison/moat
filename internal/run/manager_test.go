@@ -18,6 +18,7 @@ import (
 	"github.com/majorcontext/moat/internal/credential"
 	"github.com/majorcontext/moat/internal/daemon"
 	"github.com/majorcontext/moat/internal/deps"
+	"github.com/majorcontext/moat/internal/devcontainer"
 	"github.com/majorcontext/moat/internal/routing"
 	"github.com/majorcontext/moat/internal/storage"
 )
@@ -1967,6 +1968,39 @@ func TestRewriteExtraHostsForCustomNetwork(t *testing.T) {
 			}
 			if extraHosts[2] != syntheticHostGateway+":"+gw {
 				t.Errorf("moat-host entry not rewritten, got %q", extraHosts[2])
+			}
+		})
+	}
+}
+
+func TestManager_DevcontainerPrecedence(t *testing.T) {
+	cases := []struct {
+		name            string
+		configBaseImage string
+		configDeps      []string
+		hasDevcontainer bool
+		wantUse         bool
+	}{
+		{"no-dc-no-base", "", nil, false, false},
+		{"no-dc-with-base", "x:1", nil, false, false},
+		{"dc-no-config", "", nil, true, true},
+		{"dc-config-silent", "", nil, true, true},
+		{"dc-config-with-base", "x:1", nil, true, false},
+		{"dc-config-with-deps", "", []string{"node:20"}, true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var cfg *config.Config
+			if c.configBaseImage != "" || c.configDeps != nil {
+				cfg = &config.Config{BaseImage: c.configBaseImage, Dependencies: c.configDeps}
+			}
+			var dc *devcontainer.Config
+			if c.hasDevcontainer {
+				dc = &devcontainer.Config{Image: "ubuntu:24.04"}
+			}
+			got := useDevcontainerForImage(cfg, dc)
+			if got != c.wantUse {
+				t.Errorf("%s: got %v, want %v", c.name, got, c.wantUse)
 			}
 		})
 	}

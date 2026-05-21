@@ -142,16 +142,17 @@ type Run struct {
 
 // Options configures a new run.
 type Options struct {
-	Name          string // Optional explicit name (--name flag or from config)
-	Workspace     string
-	Grants        []string
-	Cmd           []string       // Command to run (default: /bin/bash)
-	Config        *config.Config // Optional moat.yaml config
-	Env           []string       // Additional environment variables (KEY=VALUE)
-	Rebuild       bool           // Force rebuild of container image (ignores cache)
-	KeepContainer bool           // If true, don't auto-remove container after run
-	Interactive   bool           // Keep stdin open for interactive input
-	Clipboard     bool           // Enable host clipboard bridging
+	Name           string // Optional explicit name (--name flag or from config)
+	Workspace      string
+	Grants         []string
+	Cmd            []string       // Command to run (default: /bin/bash)
+	Config         *config.Config // Optional moat.yaml config
+	Env            []string       // Additional environment variables (KEY=VALUE)
+	Rebuild        bool           // Force rebuild of container image (ignores cache)
+	KeepContainer  bool           // If true, don't auto-remove container after run
+	Interactive    bool           // Keep stdin open for interactive input
+	Clipboard      bool           // Enable host clipboard bridging
+	NoDevcontainer bool           // Forces moat to ignore .devcontainer/devcontainer.json
 }
 
 // generateID creates a unique run identifier.
