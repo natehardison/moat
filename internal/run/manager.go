@@ -564,6 +564,72 @@ func useDevcontainerForImage(cfg *config.Config, dc *devcontainer.Config) bool {
 	return cfg.BaseImage == "" && len(cfg.Dependencies) == 0
 }
 
+// resolveImageSpecForDevcontainer detects the devcontainer configuration,
+// applies precedence rules (moat.yaml base_image/dependencies beat devcontainer),
+// runs the devcontainer Stage A build when applicable, and returns the
+// partially-populated ImageSpec together with the devcontainer base tag.
+//
+// The returned ImageSpec has BaseImage set (either from moat.yaml or from
+// the Stage A devcontainer build) and RemapUser/UID/GID set on Linux when
+// the devcontainer specifies a non-root user with updateRemoteUserUID enabled.
+// Other ImageSpec fields (NeedsSSH, InitProviders, etc.) are left at zero
+// for the caller (Create) to fill in after resolving runtime context.
+//
+// dcBaseTag is empty when no devcontainer is used.
+func (m *Manager) resolveImageSpecForDevcontainer(ctx context.Context, opts Options) (*deps.ImageSpec, string, error) {
+	// Detect devcontainer.json and apply precedence rule:
+	// moat.yaml base_image or dependencies win over devcontainer.
+	dcCfg, dcErr := devcontainer.Detect(opts.Workspace)
+	if dcErr != nil {
+		return nil, "", fmt.Errorf("parse devcontainer.json: %w", dcErr)
+	}
+	if opts.NoDevcontainer {
+		dcCfg = nil
+	}
+	useDC := useDevcontainerForImage(opts.Config, dcCfg)
+	if dcCfg != nil && !useDC && (opts.Config != nil && (opts.Config.BaseImage != "" || len(opts.Config.Dependencies) > 0)) {
+		ui.Warnf("devcontainer.json detected but ignored: moat.yaml specifies base_image or dependencies")
+	}
+
+	spec := &deps.ImageSpec{}
+
+	var dcBaseTag string
+	if useDC {
+		// Stage A: run initializeCommand, build base image, bake containerEnv overlay.
+		if err := devcontainer.RunInitializeCommand(ctx, dcCfg.InitializeCmd, opts.Workspace); err != nil {
+			return nil, "", err
+		}
+		bm := m.defaultRuntime().BuildManager()
+		if bm == nil {
+			return nil, "", fmt.Errorf("runtime %s does not support image building (needed for devcontainer)", m.defaultRuntime().Type())
+		}
+		tag, err := devcontainer.BuildBase(ctx, bm, opts.Workspace, dcCfg, devcontainer.BuildOptions{NoCache: opts.Rebuild})
+		if err != nil {
+			return nil, "", fmt.Errorf("building devcontainer base: %w", err)
+		}
+		dcBaseTag = tag
+	}
+
+	// Prefer devcontainer base over moat.yaml base when useDC is true.
+	specBase := resolveBaseImage(opts.Config)
+	if dcBaseTag != "" {
+		specBase = dcBaseTag
+	}
+	spec.BaseImage = specBase
+
+	// On Linux, remap the devcontainer user's UID/GID to match the workspace
+	// owner so that files inside the workspace mount remain owned by the host
+	// user (mirrors VS Code's updateRemoteUserUID behavior).
+	if useDC && goruntime.GOOS == "linux" && dcCfg.User != "root" && dcCfg.UpdateRemoteUserUID {
+		uid, gid := getWorkspaceOwner(opts.Workspace)
+		spec.RemapUser = dcCfg.User
+		spec.RemapUID = uid
+		spec.RemapGID = gid
+	}
+
+	return spec, dcBaseTag, nil
+}
+
 // Create initializes a new run without starting it.
 func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 	// Resolve agent name
@@ -1753,24 +1819,9 @@ region = %s
 		}
 	}
 
-	// Detect devcontainer.json and apply precedence rule:
-	// moat.yaml base_image or dependencies win over devcontainer.
-	dcCfg, dcErr := devcontainer.Detect(opts.Workspace)
-	if dcErr != nil {
-		return nil, fmt.Errorf("parse devcontainer.json: %w", dcErr)
-	}
-	if opts.NoDevcontainer {
-		dcCfg = nil
-	}
-	useDC := useDevcontainerForImage(opts.Config, dcCfg)
-	if dcCfg != nil && !useDC && (opts.Config != nil && (opts.Config.BaseImage != "" || len(opts.Config.Dependencies) > 0)) {
-		ui.Warnf("devcontainer.json detected but ignored: moat.yaml specifies base_image or dependencies")
-	}
-	_ = useDC // consumed in Task 2.6 (Stage A build + ImageSpec wiring)
-	_ = dcCfg // same
-
 	// Build the image spec — single source of truth for image resolution,
-	// tag generation, and Dockerfile generation.
+	// tag generation, and Dockerfile generation. resolveImageSpecForDevcontainer
+	// handles devcontainer detection, Stage A build, and base image precedence.
 	hasSSHGrants := len(sshGrants) > 0
 	// Only enable BuildKit-specific Dockerfile features (--mount=type=cache) when
 	// we're certain BuildKit is available. With BUILDKIT_HOST set, a standalone
@@ -1778,20 +1829,25 @@ region = %s
 	// builder, which can fail to parse BuildKit syntax (e.g., --mount=type=cache
 	// confuses legacy parser line counting, causing "unknown instruction" errors).
 	useBuildKit := os.Getenv("BUILDKIT_HOST") != "" && os.Getenv("MOAT_DISABLE_BUILDKIT") != "1"
-	imageSpec := &deps.ImageSpec{
-		BaseImage:          resolveBaseImage(opts.Config),
-		NeedsSSH:           hasSSHGrants,
-		SSHHosts:           sshGrants,
-		InitProviders:      imgNeeds.initProviders,
-		NeedsFirewall:      needsProxyForFirewall,
-		NeedsGitIdentity:   hasGit,
-		NeedsInitFiles:     imgNeeds.initFiles,
-		NeedsClipboard:     needsClipboard,
-		UseBuildKit:        &useBuildKit,
-		ClaudeMarketplaces: claudeMarketplaces,
-		ClaudePlugins:      claudePlugins,
-		Hooks:              hooks,
+
+	imageSpec, _, specErr := m.resolveImageSpecForDevcontainer(ctx, opts)
+	if specErr != nil {
+		cleanupDaemonRun()
+		cleanupSSH(sshServer)
+		return nil, specErr
 	}
+	// Fill in the fields that depend on runtime context built above.
+	imageSpec.NeedsSSH = hasSSHGrants
+	imageSpec.SSHHosts = sshGrants
+	imageSpec.InitProviders = imgNeeds.initProviders
+	imageSpec.NeedsFirewall = needsProxyForFirewall
+	imageSpec.NeedsGitIdentity = hasGit
+	imageSpec.NeedsInitFiles = imgNeeds.initFiles
+	imageSpec.NeedsClipboard = needsClipboard
+	imageSpec.UseBuildKit = &useBuildKit
+	imageSpec.ClaudeMarketplaces = claudeMarketplaces
+	imageSpec.ClaudePlugins = claudePlugins
+	imageSpec.Hooks = hooks
 
 	// Resolve container image based on dependencies and image spec
 	hasDeps := len(installableDeps) > 0
