@@ -253,16 +253,17 @@ func ExecuteRun(ctx context.Context, opts intcli.ExecOptions) (*run.Run, error) 
 
 	// Build run options
 	runOpts := run.Options{
-		Name:          opts.Flags.Name,
-		Workspace:     opts.Workspace,
-		Grants:        opts.Flags.Grants,
-		Cmd:           opts.Command,
-		Config:        opts.Config,
-		Env:           opts.Flags.Env,
-		Rebuild:       opts.Flags.Rebuild,
-		KeepContainer: opts.Flags.KeepContainer,
-		Interactive:   opts.Interactive,
-		Clipboard:     clipboard,
+		Name:           opts.Flags.Name,
+		Workspace:      opts.Workspace,
+		Grants:         opts.Flags.Grants,
+		Cmd:            opts.Command,
+		Config:         opts.Config,
+		Env:            opts.Flags.Env,
+		Rebuild:        opts.Flags.Rebuild,
+		KeepContainer:  opts.Flags.KeepContainer,
+		Interactive:    opts.Interactive,
+		Clipboard:      clipboard,
+		NoDevcontainer: opts.Flags.NoDevcontainer,
 	}
 
 	// Create run

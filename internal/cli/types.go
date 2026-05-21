@@ -8,17 +8,18 @@ import (
 // ExecFlags holds the common flags for container execution commands.
 // These are shared between `moat run`, `moat claude`, and future tool commands.
 type ExecFlags struct {
-	Grants        []string
-	Env           []string
-	Mounts        []string
-	Name          string
-	Runtime       string
-	Rebuild       bool
-	KeepContainer bool
-	Interactive   bool
-	NoSandbox     bool
-	NoClipboard   bool
-	TTYTrace      string // Path to save terminal I/O trace for debugging
+	Grants         []string
+	Env            []string
+	Mounts         []string
+	Name           string
+	Runtime        string
+	Rebuild        bool
+	KeepContainer  bool
+	Interactive    bool
+	NoSandbox      bool
+	NoClipboard    bool
+	NoDevcontainer bool   // Ignore .devcontainer/devcontainer.json in the workspace
+	TTYTrace       string // Path to save terminal I/O trace for debugging
 }
 
 // AddExecFlags adds the common execution flags to a command.

@@ -66,6 +66,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	AddExecFlags(runCmd, &runFlags)
 	runCmd.Flags().BoolVarP(&runFlags.Interactive, "interactive", "i", false, "interactive mode (stdin + TTY)")
+	runCmd.Flags().BoolVar(&runFlags.NoDevcontainer, "no-devcontainer", false, "ignore .devcontainer/devcontainer.json in the workspace")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
