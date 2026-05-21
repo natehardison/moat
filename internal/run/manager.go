@@ -4235,6 +4235,7 @@ func buildProxyEnv(authToken string, proxyPort int, hostNetworkMode bool) []stri
 		"NO_PROXY=" + noProxy,
 		"no_proxy=" + noProxy,
 		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
 		"MOAT_HOST_GATEWAY=" + syntheticHostGateway,
 	}
 }
