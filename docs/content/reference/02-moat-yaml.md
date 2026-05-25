@@ -1100,6 +1100,44 @@ claude:
 - Type: `boolean`
 - Default: `true` (when `anthropic` grant is used)
 
+### claude.subscription_type
+
+Sets the `subscriptionType` written to Claude Code's `.credentials.json` inside the
+container (e.g. `pro`, `max`). Claude Code needs a non-empty subscription type to
+treat the session as a subscription rather than "API Usage Billing".
+
+```yaml
+claude:
+  subscription_type: max
+```
+
+- Type: `string`
+- Default: `max`
+
+`setup-token` and pasted-token grants carry no plan information, so they always
+default to `max`. **If you are not on a Max plan and use one of those grant types,
+set `claude.subscription_type` to your actual plan (e.g. `pro`)** — otherwise Claude
+Code will show "Max" and may surface Max-only options locally that then fail
+server-side. Grants created with **import existing credentials** read the real plan
+from your host login, so they don't need this override.
+
+The real plan limits are always enforced server-side via the token the proxy injects;
+this value only affects what Claude Code displays and gates locally.
+
+### claude.rate_limit_tier
+
+Sets the `rateLimitTier` written to Claude Code's `.credentials.json` (e.g.
+`default_claude_max_20x`). Optional; mainly affects Claude Code's local rate-limit
+hints.
+
+```yaml
+claude:
+  rate_limit_tier: default_claude_max_20x
+```
+
+- Type: `string`
+- Default: unset (omitted), unless an imported grant supplied it.
+
 ### claude.plugins
 
 Enable or disable plugins. Plugins are installed during image build and cached in Docker layers, eliminating startup latency.
