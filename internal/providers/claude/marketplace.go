@@ -58,16 +58,38 @@ func CollectMarketplaceTar(clonedDir, name string) (contextKey string, data []by
 			return fmt.Errorf("computing relative path: %w", relErr)
 		}
 
+		// Skip the root entry. The destination directory is created by
+		// "mkdir -p" in the Dockerfile before "tar xf", so emitting a "./"
+		// header would only chmod the destination to the host temp-dir mode
+		// (0700 from os.MkdirTemp) on extraction.
+		if rel == "." {
+			return nil
+		}
+
+		// Skip non-regular files (symlinks, devices, sockets, FIFOs). A
+		// committed symlink would otherwise be followed by os.ReadFile and
+		// the target's contents copied under the symlink's name, which is
+		// both a content-leak risk (e.g. bin/foo -> /etc/passwd) and would
+		// land in the tar with the symlink's 0777 mode bits.
+		if !d.IsDir() && !d.Type().IsRegular() {
+			log.Warn("skipping non-regular file in marketplace",
+				"file", filepath.ToSlash(rel),
+				"type", d.Type().String())
+			return nil
+		}
+
 		info, infoErr := d.Info()
 		if infoErr != nil {
 			return fmt.Errorf("stat %s: %w", d.Name(), infoErr)
 		}
 
 		// Add directory entries to the tar for correct extraction.
+		// Mode().Perm() intentionally drops setuid/setgid/sticky — a marketplace
+		// should not be able to smuggle those bits into the container image.
 		if d.IsDir() {
 			if hdrErr := tw.WriteHeader(&tar.Header{
 				Name:     filepath.ToSlash(rel) + "/",
-				Mode:     0755,
+				Mode:     int64(info.Mode().Perm()),
 				Typeflag: tar.TypeDir,
 			}); hdrErr != nil {
 				return fmt.Errorf("writing dir header for %s: %w", rel, hdrErr)
@@ -89,9 +111,12 @@ func CollectMarketplaceTar(clonedDir, name string) (contextKey string, data []by
 			return fmt.Errorf("reading %s: %w", rel, readErr)
 		}
 
+		// Preserve the file mode from the upstream repo. This matters for
+		// executable hook scripts (e.g. bin/aw-hook, scripts/on-prompt-submit.sh)
+		// that need +x to run inside the container.
 		if hdrErr := tw.WriteHeader(&tar.Header{
 			Name: filepath.ToSlash(rel),
-			Mode: 0644,
+			Mode: int64(info.Mode().Perm()),
 			Size: int64(len(fileData)),
 		}); hdrErr != nil {
 			return fmt.Errorf("writing tar header for %s: %w", rel, hdrErr)
