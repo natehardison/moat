@@ -1999,7 +1999,11 @@ region = %s
 			// the container cannot reach directly.
 			mcpServers := make(map[string]provider.MCPServerConfig)
 			if opts.Config != nil && len(opts.Config.MCP) > 0 {
-				proxyAddr := fmt.Sprintf("%s:%d", m.defaultRuntime().GetHostAddress(), r.ProxyPort)
+				// Use the synthetic proxy host (in NO_PROXY) so the MCP client
+				// connects directly and the proxy strips the per-run token via
+				// handleDirectMCPRelay. GetHostAddress is not in NO_PROXY, so it would
+				// route through the CONNECT tunnel to the wrong handler → 404.
+				proxyAddr := fmt.Sprintf("%s:%d", syntheticProxyHost, r.ProxyPort)
 				for _, mcp := range opts.Config.MCP {
 					relayURL := fmt.Sprintf("http://%s/mcp/%s/%s", proxyAddr, r.ProxyAuthToken, mcp.Name)
 					mcpCfg := provider.MCPServerConfig{
