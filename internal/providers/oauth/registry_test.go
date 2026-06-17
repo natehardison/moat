@@ -14,6 +14,9 @@ func TestLookupServerURL(t *testing.T) {
 		{"stripe", "https://mcp.stripe.com"},
 		{"asana", "https://mcp.asana.com/mcp"},
 		{"posthog", "https://mcp.posthog.com/mcp"},
+		// context7 is in the catalog but uses an API-key grant, not OAuth —
+		// it must not feed into OAuth discovery.
+		{"context7", ""},
 		{"nonexistent", ""},
 	}
 	for _, tt := range tests {
@@ -23,11 +26,5 @@ func TestLookupServerURL(t *testing.T) {
 				t.Errorf("LookupServerURL(%q) = %q, want %q", tt.name, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestRegistryNotEmpty(t *testing.T) {
-	if len(registry) == 0 {
-		t.Error("registry should not be empty")
 	}
 }

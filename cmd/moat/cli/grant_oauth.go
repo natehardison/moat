@@ -9,6 +9,7 @@ import (
 	"github.com/majorcontext/moat/internal/config"
 	"github.com/majorcontext/moat/internal/credential"
 	"github.com/majorcontext/moat/internal/log"
+	"github.com/majorcontext/moat/internal/mcpcatalog"
 	"github.com/majorcontext/moat/internal/providers/oauth"
 	"github.com/spf13/cobra"
 )
@@ -30,8 +31,9 @@ var grantOAuthCmd = &cobra.Command{
 Opens a browser for OAuth authorization and stores the token securely.
 Supports automatic discovery for MCP servers that implement OAuth metadata.
 
-Well-known services (asana, cloudflare, hubspot, linear, notion, posthog,
-stripe) are auto-discovered without needing --url or a config file.
+Well-known services (asana, betterstack, cloudflare, hubspot, linear, notion,
+posthog, sentry, stripe) are auto-discovered without needing --url or a config
+file.
 
 Examples:
   # Auto-discover a well-known service
@@ -177,7 +179,14 @@ func runGrantOAuth(cmd *cobra.Command, args []string) error {
 		serverURL = "<server-url>"
 	}
 	fmt.Printf("\nUse in moat.yaml:\n\n")
-	fmt.Printf("grants:\n  - oauth:%s\n\nmcp:\n  - name: %s\n    url: %s\n    auth:\n      grant: oauth:%s\n      header: Authorization\n\n", name, name, serverURL, name)
+	// Only suggest the bare shorthand when the catalog entry actually uses
+	// OAuth — otherwise the shorthand would resolve to a different (API-key)
+	// grant than the oauth: credential just created.
+	if e, known := mcpcatalog.Lookup(name); known && e.OAuth {
+		fmt.Printf("mcp:\n  - %s\n\n", name)
+	} else {
+		fmt.Printf("mcp:\n  - name: %s\n    url: %s\n    auth:\n      grant: oauth:%s\n      header: Authorization\n\n", name, serverURL, name)
+	}
 
 	return nil
 }
