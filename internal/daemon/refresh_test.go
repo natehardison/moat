@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,59 @@ func TestResolveCredName(t *testing.T) {
 				t.Errorf("resolveCredName(%q, %q) = %q, want %q", tt.grantName, tt.grant, got, tt.want)
 			}
 		})
+	}
+}
+
+// Regression: the shared daemon may run under the default profile
+// (ActiveProfile == "") while serving a run created under a different profile.
+// Token refresh must read/write the *run's* profile store, not the daemon
+// process's, or it injects the wrong profile's credentials into the run
+// (e.g. a profile=vibrant run suddenly using the default profile's Linear auth).
+func TestStoreDirForRun_ScopesToRunProfile(t *testing.T) {
+	t.Setenv("MOAT_HOME", t.TempDir())
+	saved := credential.ActiveProfile
+	credential.ActiveProfile = "" // daemon process: default profile
+	t.Cleanup(func() { credential.ActiveProfile = saved })
+
+	rc := NewRunContext("run-vibrant")
+	rc.CredProfile = "vibrant"
+
+	got := storeDirForRun(rc)
+	if want := credential.StoreDirForProfile("vibrant"); got != want {
+		t.Errorf("storeDirForRun(profile=vibrant) = %q, want %q", got, want)
+	}
+	if got == credential.DefaultStoreDir() {
+		t.Errorf("storeDirForRun returned the daemon's default store %q — cross-profile credential leak", got)
+	}
+}
+
+// Companion (other direction): a default-profile run (empty CredProfile, the
+// backwards-compat case for an older CLI that omits the profile) must resolve
+// to the unscoped default store, never a "profiles/" subdir.
+func TestStoreDirForRun_DefaultProfileFallback(t *testing.T) {
+	t.Setenv("MOAT_HOME", t.TempDir())
+	saved := credential.ActiveProfile
+	credential.ActiveProfile = "" // daemon process default
+	t.Cleanup(func() { credential.ActiveProfile = saved })
+
+	rc := NewRunContext("run-default")
+	rc.CredProfile = "" // older CLI omitted the profile
+
+	got := storeDirForRun(rc)
+	if want := credential.DefaultStoreDir(); got != want {
+		t.Errorf("storeDirForRun(profile=\"\") = %q, want default store %q", got, want)
+	}
+	if strings.Contains(got, "profiles") {
+		t.Errorf("default-profile run resolved to a profile-scoped dir %q", got)
+	}
+}
+
+// The run's profile must survive the RegisterRequest -> RunContext conversion
+// so the daemon can scope refresh to it.
+func TestToRunContext_CarriesProfile(t *testing.T) {
+	req := &RegisterRequest{RunID: "r", CredProfile: "vibrant"}
+	if got := req.ToRunContext().CredProfile; got != "vibrant" {
+		t.Errorf("ToRunContext().CredProfile = %q, want vibrant", got)
 	}
 }
 
