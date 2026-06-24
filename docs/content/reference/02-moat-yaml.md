@@ -525,10 +525,23 @@ Unlike `mounts:` (bind mounts with a host-side source path), volumes are managed
 | `name` | `string` | yes | Volume name, scoped to agent. Must match `[a-z0-9][a-z0-9_-]*`. |
 | `target` | `string` | yes | Absolute path inside the container. |
 | `readonly` | `bool` | no | Mount as read-only. Default: `false`. |
+| `type` | `string` | no | Backing store: `bind` (default) or `volume`. See [Storage](#storage). |
 
 #### Storage
 
-Volumes are stored on the host at `~/.moat/volumes/<agent-name>/<volume-name>/` and bind-mounted into the container. This works identically across Docker and Apple container runtimes.
+A volume's `type` selects how it is backed:
+
+- **`bind`** (default) — a host directory at `~/.moat/volumes/<agent-name>/<volume-name>/`, bind-mounted into the container. The data is visible and editable on the host. On runtimes that run containers inside a VM, a bind mount crosses the host↔VM filesystem-sharing layer, which adds per-operation latency for directories with many small files and can differ from a native filesystem in its file-locking and memory-mapping behaviour. Works on both Docker and Apple container runtimes.
+- **`volume`** — a Docker named volume (`moat_<agent-name>_<volume-name>`) stored on the container engine's native filesystem (inside the VM where applicable). Not visible on the host. It bypasses the host-sharing layer, so it is faster for I/O- and metadata-heavy directories and behaves like an ordinary local filesystem. Docker runtime only (rejected on the Apple container runtime).
+
+Choose `volume` for large, container-only working directories — build caches, dependency trees, tool state — where host visibility is not needed and throughput or filesystem semantics matter. Choose `bind` when you want to read or edit the data from the host.
+
+```yaml
+volumes:
+  - name: build-cache
+    target: /workspace/.cache
+    type: volume
+```
 
 #### Volume lifecycle
 
@@ -547,6 +560,8 @@ moat volumes ls                  # List managed volumes
 moat volumes rm <agent-name>     # Remove volumes for an agent
 moat volumes prune               # Remove all managed volumes
 ```
+
+> **Note:** `moat volumes` commands manage `type: bind` volumes (the host directories under `~/.moat/volumes/`). A `type: volume` entry is a native Docker named volume — remove it with `docker volume rm moat_<agent-name>_<volume-name>`.
 
 For examples of using volumes to cache dependencies across runs, see [Recipes](../guides/13-recipes.md).
 

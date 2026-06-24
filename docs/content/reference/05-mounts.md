@@ -133,6 +133,8 @@ Excluded directories are overlaid with tmpfs (in-memory) mounts inside the conta
 
 This is useful for large dependency trees (`node_modules`, `.venv`, `vendor/`) that cause performance problems with shared filesystem mounts -- particularly VirtioFS on Apple Containers, where open file handles accumulate over time.
 
+> **Persistent alternative:** tmpfs excludes are in-memory and ephemeral -- their contents are lost between runs and consume container RAM. For a working directory that should **persist** across runs without using RAM, use a [`volumes:` entry with `type: volume`](02-moat-yaml.md#storage) instead: a Docker named volume on the engine's native filesystem, which also bypasses the host↔VM filesystem-sharing layer that a bind mount crosses.
+
 ```yaml
 mounts:
   - source: .

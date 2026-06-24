@@ -20,6 +20,11 @@ import (
 // Must start with a letter or digit.
 var volumeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
+// agentVolumeNameRe matches the chars allowed in a Docker volume name component.
+// A type: volume entry turns the agent name into part of moat_<name>_<vol>, so the
+// agent name must use this charset (the "moat_" prefix covers the leading-char rule).
+var agentVolumeNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // imageRefRe matches valid Docker image references: registry/repo:tag or @sha256:digest.
 // Prevents Dockerfile injection via newlines or special characters in base_image.
 var imageRefRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._\-/:]*(@sha256:[a-f0-9]{64})?$`)
@@ -134,6 +139,12 @@ type VolumeConfig struct {
 	Name     string `yaml:"name"`
 	Target   string `yaml:"target"`
 	ReadOnly bool   `yaml:"readonly,omitempty"`
+	// Type selects the backing store: "bind" (default) is a host bind mount at
+	// ~/.moat/volumes/<agent>/<name> (visible on the host; crosses the host↔VM
+	// filesystem-sharing layer on VM-based runtimes). "volume" is a Docker named
+	// volume on the engine's native filesystem (not host-visible; bypasses that
+	// layer). Docker runtime only.
+	Type string `yaml:"type,omitempty"`
 }
 
 // MCPServerConfig defines an MCP server configuration for top-level
@@ -695,6 +706,20 @@ func Load(dir string) (*Config, error) {
 		if cfg.Name == "" {
 			return nil, fmt.Errorf("'name' is required when volumes are configured (volumes are scoped by agent name)")
 		}
+		// A type: volume entry becomes part of a Docker volume name
+		// (moat_<name>_<vol>), so the agent name must use the Docker name charset.
+		// Only enforced when a named volume is present; the bind path uses the name
+		// only as a filesystem path and tolerates more.
+		hasNamedVolume := false
+		for _, vol := range cfg.Volumes {
+			if vol.IsNamedVolume() {
+				hasNamedVolume = true
+				break
+			}
+		}
+		if hasNamedVolume && !agentVolumeNameRe.MatchString(cfg.Name) {
+			return nil, fmt.Errorf("name %q is not valid with type: volume (must match [A-Za-z0-9_.-]+; it becomes part of the Docker volume name)", cfg.Name)
+		}
 		seenVolNames := make(map[string]bool)
 		seenVolTargets := make(map[string]bool)
 		for i, vol := range cfg.Volumes {
@@ -711,6 +736,18 @@ func Load(dir string) (*Config, error) {
 			if !filepath.IsAbs(vol.Target) {
 				return nil, fmt.Errorf("%s: 'target' must be an absolute path, got %q", prefix, vol.Target)
 			}
+			switch vol.Type {
+			case "", "bind", "volume":
+				// ok; "" defaults to bind
+			default:
+				return nil, fmt.Errorf("%s: invalid type %q (must be \"bind\" or \"volume\")", prefix, vol.Type)
+			}
+			// type: volume targets are passed to moat-init via the space-separated
+			// MOAT_VOLUME_CHOWN env var; a whitespace target would word-split and
+			// misroute the chown. Reject it with a clear error instead.
+			if vol.Type == "volume" && strings.ContainsAny(vol.Target, " \t\n\r") {
+				return nil, fmt.Errorf("%s: type: volume target must not contain whitespace, got %q", prefix, vol.Target)
+			}
 			if seenVolNames[vol.Name] {
 				return nil, fmt.Errorf("%s: duplicate volume name %q", prefix, vol.Name)
 			}
@@ -719,6 +756,9 @@ func Load(dir string) (*Config, error) {
 				return nil, fmt.Errorf("%s: duplicate volume target %q", prefix, vol.Target)
 			}
 			seenVolTargets[vol.Target] = true
+		}
+		if err := CheckVolumeRuntimeSupport(cfg.Volumes, cfg.Runtime == "apple"); err != nil {
+			return nil, err
 		}
 	}
 

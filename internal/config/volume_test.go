@@ -178,6 +178,55 @@ volumes:
 `,
 			errContains: "duplicate volume target",
 		},
+		{
+			name: "invalid volume type",
+			content: `
+name: myapp
+agent: test
+volumes:
+  - name: state
+    target: /data
+    type: nfs
+`,
+			errContains: `invalid type "nfs"`,
+		},
+		{
+			name: "named volume on apple runtime",
+			content: `
+name: myapp
+agent: test
+runtime: apple
+volumes:
+  - name: state
+    target: /data
+    type: volume
+`,
+			errContains: "not supported on the Apple",
+		},
+		{
+			name: "volume target with whitespace",
+			content: `
+name: myapp
+agent: test
+volumes:
+  - name: state
+    target: /work space/cache
+    type: volume
+`,
+			errContains: "must not contain whitespace",
+		},
+		{
+			name: "agent name invalid for named volume",
+			content: `
+name: "bad name"
+agent: test
+volumes:
+  - name: state
+    target: /data
+    type: volume
+`,
+			errContains: "not valid with type: volume",
+		},
 	}
 
 	for _, tt := range tests {
@@ -192,6 +241,37 @@ volumes:
 			}
 			if !strings.Contains(err.Error(), tt.errContains) {
 				t.Errorf("error should contain %q, got: %v", tt.errContains, err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigVolumeTypesValid(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"default type (bind)", "name: myapp\nvolumes:\n  - name: v\n    target: /data\n"},
+		{"explicit bind", "name: myapp\nvolumes:\n  - name: v\n    target: /data\n    type: bind\n"},
+		{"explicit volume", "name: myapp\nvolumes:\n  - name: v\n    target: /data\n    type: volume\n"},
+		{"bind on apple ok", "name: myapp\nruntime: apple\nvolumes:\n  - name: v\n    target: /data\n    type: bind\n"},
+		// whitespace check is scoped to type: volume; a bind target with a space still loads.
+		{"bind target with space ok", "name: myapp\nvolumes:\n  - name: v\n    target: /work space/c\n    type: bind\n"},
+		// agent-name charset is enforced only for type: volume; bind tolerates a spaced name.
+		{"spaced agent name ok for bind", "name: \"bad name\"\nvolumes:\n  - name: v\n    target: /data\n    type: bind\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "moat.yaml"), []byte(tt.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(dir)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.Volumes) != 1 {
+				t.Fatalf("want 1 volume, got %d", len(cfg.Volumes))
 			}
 		})
 	}

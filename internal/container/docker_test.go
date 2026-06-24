@@ -53,6 +53,77 @@ func TestBuildContainerMounts_BindMounts(t *testing.T) {
 	}
 }
 
+// A MountConfig with Volume:true becomes a Docker named-volume mount
+// (Type=volume, Source is the volume name); without it, a bind mount.
+func TestBuildContainerMounts_NamedVolume(t *testing.T) {
+	binds := []MountConfig{
+		{Source: "/host/project", Target: "/workspace"},
+		{Source: "moat_agent_node-modules", Target: "/workspace/node_modules", Volume: true},
+	}
+
+	got := buildContainerMounts(binds, nil)
+
+	want := []mount.Mount{
+		{Type: mount.TypeBind, Source: "/host/project", Target: "/workspace"},
+		{Type: mount.TypeVolume, Source: "moat_agent_node-modules", Target: "/workspace/node_modules"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildContainerMounts() = %#v, want %#v", got, want)
+	}
+}
+
+// volumeOwnershipPlan: needs the helper only for a non-root container that has
+// named volumes; skips for a root entrypoint or when there are no named volumes.
+func TestVolumeOwnershipPlan(t *testing.T) {
+	volMounts := []MountConfig{
+		{Source: "/host/proj", Target: "/workspace"},                             // bind, ignored
+		{Source: "moat_a_nm", Target: "/workspace/node_modules", Volume: true},   // volume
+		{Source: "moat_a_store", Target: "/workspace/.pnpm-store", Volume: true}, // volume
+	}
+
+	// root entrypoint (User empty): moat-init chowns, no helper
+	if _, _, ok := volumeOwnershipPlan(Config{User: "", Mounts: volMounts}); ok {
+		t.Error("root entrypoint should not need the ownership helper")
+	}
+	// non-root but no named volumes: nothing to do
+	if _, _, ok := volumeOwnershipPlan(Config{User: "1000:1000", Mounts: []MountConfig{{Source: "/h", Target: "/workspace"}}}); ok {
+		t.Error("no named volumes should not need the ownership helper")
+	}
+	// non-root with named volumes: plan covers only the volumes, in order
+	mounts, cmd, ok := volumeOwnershipPlan(Config{User: "1000:1000", Mounts: volMounts})
+	if !ok {
+		t.Fatal("non-root + named volumes should need the ownership helper")
+	}
+	wantMounts := []mount.Mount{
+		{Type: mount.TypeVolume, Source: "moat_a_nm", Target: "/moat-vol/0"},
+		{Type: mount.TypeVolume, Source: "moat_a_store", Target: "/moat-vol/1"},
+	}
+	if !reflect.DeepEqual(mounts, wantMounts) {
+		t.Errorf("helper mounts = %#v, want %#v", mounts, wantMounts)
+	}
+	wantCmd := []string{"chown", "1000:1000", "/moat-vol/0", "/moat-vol/1"}
+	if !reflect.DeepEqual(cmd, wantCmd) {
+		t.Errorf("chown cmd = %#v, want %#v", cmd, wantCmd)
+	}
+}
+
+// The ownership helper must put chown in Entrypoint, not Cmd: moat-built images
+// set ENTRYPOINT=moat-init, which drops to moatuser before running Cmd args, so a
+// Cmd-only helper would chown as the non-root user and fail with EPERM.
+func TestVolumeOwnershipHelperConfig(t *testing.T) {
+	cmd := []string{"chown", "1000:1000", "/moat-vol/0"}
+	c := volumeOwnershipHelperConfig(Config{Image: "moat/run:test"}, cmd)
+	if !reflect.DeepEqual([]string(c.Entrypoint), cmd) {
+		t.Errorf("Entrypoint = %#v, want %#v (chown must override the image ENTRYPOINT)", c.Entrypoint, cmd)
+	}
+	if len(c.Cmd) != 0 {
+		t.Errorf("Cmd must be empty (chown is the entrypoint), got %#v", c.Cmd)
+	}
+	if c.User != "0:0" {
+		t.Errorf("User = %q, want 0:0", c.User)
+	}
+}
+
 // Tmpfs must follow binds in the output slice so overlays of paths inside a
 // bind take effect on the daemon side.
 func TestBuildContainerMounts_TmpfsAfterBind(t *testing.T) {

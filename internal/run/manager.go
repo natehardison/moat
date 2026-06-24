@@ -569,6 +569,17 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 		}
 	}
 
+	// Reject `type: volume` on the Apple container runtime as early as possible —
+	// before any resources are staged — so this error return needs no cleanup.
+	// Config load already rejects an explicit `runtime: apple`; this also catches
+	// the auto-detected case where moat.yaml has no runtime: set.
+	if opts.Config != nil {
+		isApple := m.defaultRuntime().Type() == container.RuntimeApple
+		if err := config.CheckVolumeRuntimeSupport(opts.Config.Volumes, isApple); err != nil {
+			return nil, err
+		}
+	}
+
 	// Auto-include MCP auth grants so the credential processing loop loads
 	// them into the RunContext. Without this, users would need to duplicate
 	// each mcp[].auth.grant in the top-level grants: list.
@@ -719,21 +730,29 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*Run, error) {
 		}
 	}
 
-	// Add volume mounts from config.
-	// All runtimes use host-backed bind mounts (~/.moat/volumes/<agent>/<name>/)
-	// so the directory is owned by the current user, matching the container user.
+	// Add volume mounts from config. type: bind (default) → host bind mount at
+	// ~/.moat/volumes/<agent>/<name>/ (owned by the current user, matching the
+	// container user). type: volume → native in-VM Docker named volume (Docker
+	// auto-creates it on mount). Its root is created root-owned and chowned to the
+	// run user by one of two paths, depending on whether the entrypoint is root:
+	//   - root entrypoint (containerUser == ""): moat-init chowns it to moatuser,
+	//     driven by the MOAT_VOLUME_CHOWN env var injected below.
+	//   - non-root (containerUser set, e.g. Linux workspace UID): the Docker
+	//     runtime's initNamedVolumeOwnership helper chowns it to that UID before start.
+	var volumeChownPaths []string
 	if opts.Config != nil && len(opts.Config.Volumes) > 0 {
 		for _, vol := range opts.Config.Volumes {
-			volDir := config.VolumeDir(opts.Config.Name, vol.Name)
-			if err := os.MkdirAll(volDir, 0755); err != nil {
-				return nil, fmt.Errorf("creating volume directory %s: %w", volDir, err)
+			mc, isVolume := volumeMount(opts.Config.Name, vol)
+			if isVolume {
+				volumeChownPaths = append(volumeChownPaths, vol.Target)
+				log.Debug("added named volume mount", "volume", mc.Source, "target", mc.Target)
+			} else {
+				if err := os.MkdirAll(mc.Source, 0o755); err != nil {
+					return nil, fmt.Errorf("creating volume directory %s: %w", mc.Source, err)
+				}
+				log.Debug("added bind volume mount", "dir", mc.Source, "target", mc.Target)
 			}
-			mounts = append(mounts, container.MountConfig{
-				Source:   volDir,
-				Target:   vol.Target,
-				ReadOnly: vol.ReadOnly,
-			})
-			log.Debug("added volume mount", "dir", volDir, "target", vol.Target)
+			mounts = append(mounts, mc)
 		}
 	}
 
@@ -1761,6 +1780,7 @@ region = %s
 		UseBuildKit:        &useBuildKit,
 		ClaudeMarketplaces: claudeMarketplaces,
 		ClaudePlugins:      claudePlugins,
+		HasNamedVolumes:    configHasNamedVolumes(opts.Config),
 		Hooks:              hooks,
 	}
 
@@ -2742,6 +2762,14 @@ region = %s
 	if memoryMB == 0 && m.defaultRuntime().Type() == container.RuntimeApple && isAIAgent(opts.Config) {
 		memoryMB = container.DefaultAgentMemoryMB
 		log.Debug("using default agent memory for Apple container", "memoryMB", memoryMB)
+	}
+
+	// Named-volume roots are chowned to the run user by one of two mutually
+	// exclusive mechanisms (see volumeChownEnv): moat-init on the root-entrypoint
+	// path (driven by MOAT_VOLUME_CHOWN), or the runtime's initNamedVolumeOwnership
+	// helper on the non-root path.
+	if env, ok := volumeChownEnv(containerUser, volumeChownPaths); ok {
+		proxyEnv = append(proxyEnv, env)
 	}
 
 	// Create container
