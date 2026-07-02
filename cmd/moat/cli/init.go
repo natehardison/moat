@@ -60,6 +60,11 @@ func agentConfigs() []agentConfig {
 				return []string{"gemini", "-p", prompt}, nil
 			},
 		},
+		// Pi is intentionally omitted from init auto-detection: it has no
+		// credential of its own (it reuses the anthropic/openai grant), so it
+		// can never win the getCredGrant-based selection loop — the claude and
+		// codex entries already claim any anthropic/openai credential. Scaffold
+		// a Pi project by setting `agent: pi` in moat.yaml (see the Pi guide).
 	}
 }
 
