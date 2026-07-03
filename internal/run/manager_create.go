@@ -1158,6 +1158,17 @@ region = %s
 	// gets the init script via this path. Keep that chain intact when refactoring
 	// (covered by TestProvider_ImpliedDependencies + TestImageSpecNeedsInit's
 	// GitIdentity case).
+	var piPackages []string
+	if opts.Config != nil {
+		piPackages = opts.Config.Pi.Packages
+	}
+	// pi.packages is only baked when pi-cli is actually installed (the bake runs
+	// `pi install`). `moat pi` always adds pi-cli; a bare `moat run --agent pi`
+	// without pi-cli in dependencies would silently skip the packages, so warn.
+	if len(piPackages) > 0 && !hasDep(installableDeps, "pi-cli") {
+		ui.Warn("pi.packages is set but pi-cli is not a dependency — the packages will not be installed. " +
+			"Add pi-cli to dependencies, or run with `moat pi`.")
+	}
 	imageSpec := &deps.ImageSpec{
 		BaseImage:          baseImage,
 		NeedsSSH:           hasSSHGrants,
@@ -1170,6 +1181,8 @@ region = %s
 		UseBuildKit:        &useBuildKit,
 		ClaudeMarketplaces: claudeMarketplaces,
 		ClaudePlugins:      claudePlugins,
+		PiBakeSettings:     hasDep(installableDeps, "pi-cli"),
+		PiPackages:         piPackages,
 		HasNamedVolumes:    configHasNamedVolumes(opts.Config),
 		Hooks:              hooks,
 		// Volume mode requires the moat-init entrypoint to populate + chown the

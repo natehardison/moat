@@ -351,8 +351,45 @@ type GeminiConfig struct {
 // when unset it is inferred from the single configured grant. Model optionally
 // pins a model pattern (Pi's per-provider default is used when empty).
 type PiConfig struct {
-	Provider string `yaml:"provider,omitempty"`
-	Model    string `yaml:"model,omitempty"`
+	Provider string   `yaml:"provider,omitempty"`
+	Model    string   `yaml:"model,omitempty"`
+	Packages []string `yaml:"packages,omitempty"`
+}
+
+// piPackageSafe restricts pi.packages entries to characters valid in package
+// specs, URLs, and git refs — rejecting shell metacharacters as defense-in-depth
+// (the source is also single-quoted when written into the build script).
+var piPackageSafe = regexp.MustCompile(`^[A-Za-z0-9@:/._~%+#-]+$`)
+
+// validatePiPackages checks that each pi.packages entry is a remote source Moat
+// can install at image build time. Local paths are rejected because
+// `pi install <path>` records a relative path that does not resolve at runtime.
+func validatePiPackages(pkgs []string) error {
+	prefixes := []string{"npm:", "git:", "https://", "ssh://"}
+	for _, p := range pkgs {
+		if p == "" {
+			return fmt.Errorf("pi.packages: empty package source")
+		}
+		matched := ""
+		for _, pre := range prefixes {
+			if strings.HasPrefix(p, pre) {
+				matched = pre
+				break
+			}
+		}
+		if matched == "" {
+			return fmt.Errorf("pi.packages: %q is not a remote source — use npm:, git:, https://, or ssh:// "+
+				"(local paths are not supported at build time; publish the package to npm or git)", p)
+		}
+		if strings.TrimPrefix(p, matched) == "" {
+			return fmt.Errorf("pi.packages: %q has no package after the %q scheme", p, matched)
+		}
+		if !piPackageSafe.MatchString(p) {
+			return fmt.Errorf("pi.packages: %q contains invalid characters "+
+				"(allowed: letters, digits and @ : / . _ ~ %% + # -)", p)
+		}
+	}
+	return nil
 }
 
 // MarketplaceSpec defines a plugin marketplace source.
@@ -689,6 +726,11 @@ func Load(dir string) (*Config, error) {
 		if err := validateMCPServerSpec("gemini", name, spec); err != nil {
 			return nil, err
 		}
+	}
+
+	// Validate Pi packages
+	if err := validatePiPackages(cfg.Pi.Packages); err != nil {
+		return nil, err
 	}
 
 	// Validate that codex.mcp and gemini.mcp don't both define local MCP servers.

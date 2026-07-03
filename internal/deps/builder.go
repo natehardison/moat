@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"sort"
 	"strings"
+
+	"github.com/majorcontext/moat/internal/providers/pi"
 )
 
 // ImageTag generates a deterministic image tag for a set of dependencies.
@@ -81,6 +83,17 @@ func ImageTag(deps []Dependency, opts *ImageSpec) string {
 		for _, p := range sortedPlugins {
 			hashInput += ",plugin:" + p
 		}
+	}
+
+	// Content-hash the exact Pi bake script (safe settings + package installs) so
+	// any change to the baked defaults OR the declared packages invalidates cached
+	// images automatically — no manual version bump (mirrors the moat-init hashing
+	// above). Gated on PiBakeSettings so PiPackages only perturb the tag when they
+	// will actually be installed.
+	if opts.PiBakeSettings {
+		piScript := pi.GenerateDockerfileSnippet(opts.PiPackages, containerUser).ScriptContent
+		ph := sha256.Sum256(piScript)
+		hashInput += ",pi-bake:" + hex.EncodeToString(ph[:])[:8]
 	}
 
 	// Include hooks in hash (different hooks = different image)
