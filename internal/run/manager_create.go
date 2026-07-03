@@ -1176,6 +1176,7 @@ region = %s
 		SSHHosts:           sshGrants,
 		InitProviders:      imgNeeds.initProviders,
 		NeedsFirewall:      needsProxyForFirewall,
+		NeedsAWS:           imgNeeds.needsAWS,
 		NeedsGitIdentity:   hasGit,
 		NeedsInitFiles:     imgNeeds.initFiles,
 		NeedsClipboard:     needsClipboard,

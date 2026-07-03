@@ -123,8 +123,11 @@ func showProviderMetadata(cred *credential.Credential) {
 
 	switch cred.Provider {
 	case credential.ProviderAWS:
-		// Token is the role ARN for AWS — always safe to show
-		fmt.Fprintf(os.Stdout, "%s      %s\n", ui.Bold("Role:"), cred.Token)
+		// Token is the role ARN for AWS — always safe to show. Pass-through
+		// grants have no role ARN; the Profile line below identifies them.
+		if cred.Token != "" {
+			fmt.Fprintf(os.Stdout, "%s      %s\n", ui.Bold("Role:"), cred.Token)
+		}
 		if v := cred.Metadata["region"]; v != "" {
 			fmt.Fprintf(os.Stdout, "%s    %s\n", ui.Bold("Region:"), v)
 		}

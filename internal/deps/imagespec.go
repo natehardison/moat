@@ -32,6 +32,12 @@ type ImageSpec struct {
 	// policy enforcement.
 	NeedsFirewall bool
 
+	// NeedsAWS indicates an AWS credential grant is present. The container
+	// fetches credentials from the daemon endpoint via the moat-proxy
+	// synthetic hostname, which moat-init writes to /etc/hosts — without the
+	// entrypoint the endpoint is unreachable.
+	NeedsAWS bool
+
 	// NeedsGitIdentity indicates the host's git identity should be injected
 	// into the container. Used only by Dockerfile generation.
 	NeedsGitIdentity bool
@@ -113,7 +119,7 @@ func (s *ImageSpec) needsInit(dockerMode DockerMode) bool {
 	hasPreRun := s.Hooks != nil && s.Hooks.PreRun != ""
 	return s.NeedsSSH || len(s.InitProviders) > 0 || s.NeedsClipboard ||
 		dockerMode != "" || hasPreRun || s.NeedsGitIdentity || s.NeedsInitFiles ||
-		s.NeedsFirewall || s.HasNamedVolumes || s.NeedsWorkspaceVolume
+		s.NeedsFirewall || s.NeedsAWS || s.HasNamedVolumes || s.NeedsWorkspaceVolume
 }
 
 // initProviderHashComponents returns sorted hash strings for InitProviders.

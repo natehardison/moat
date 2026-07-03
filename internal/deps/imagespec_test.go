@@ -26,3 +26,16 @@ func TestNeedsWorkspaceVolumeForcesCustomImageAndInit(t *testing.T) {
 		t.Error("empty spec should not need the init entrypoint")
 	}
 }
+
+func TestNeedsInitAWS(t *testing.T) {
+	// The container reaches the AWS credential endpoint via the moat-proxy
+	// synthetic hostname, which moat-init materializes into /etc/hosts. An
+	// AWS grant without the entrypoint gets an unreachable endpoint.
+	spec := &ImageSpec{NeedsAWS: true}
+	if !spec.needsInit("") {
+		t.Fatal("needsInit() = false with NeedsAWS, want true")
+	}
+	if (&ImageSpec{}).needsInit("") {
+		t.Fatal("needsInit() = true for empty spec, want false")
+	}
+}

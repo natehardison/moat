@@ -9,6 +9,7 @@ import (
 
 	"github.com/majorcontext/moat/internal/credential"
 	"github.com/majorcontext/moat/internal/mcpcatalog"
+	awsprov "github.com/majorcontext/moat/internal/providers/aws"
 	"github.com/majorcontext/moat/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -128,6 +129,9 @@ func runGrantList(cmd *cobra.Command, args []string) error {
 func credType(c credential.Credential) string {
 	switch c.Provider {
 	case credential.ProviderAWS:
+		if c.Metadata[awsprov.MetaKeySource] == "profile" {
+			return "profile"
+		}
 		return "role"
 	case credential.ProviderGitHub:
 		return "token"

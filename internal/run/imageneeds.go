@@ -21,6 +21,11 @@ const providerCodex = "codex"
 type imageNeeds struct {
 	initProviders []string
 	initFiles     bool
+	// needsAWS: an AWS grant is present. The container reaches the AWS
+	// credential endpoint via the moat-proxy synthetic hostname, which only
+	// moat-init materializes into /etc/hosts — so AWS must force the
+	// entrypoint even when nothing else does.
+	needsAWS bool
 }
 
 // resolveImageNeeds determines which agent init steps and features are needed
@@ -85,6 +90,9 @@ func resolveImageNeedsWithStore(grants []string, depList []deps.Dependency, stor
 					initSet["gemini"] = true
 				}
 			}
+
+		case "aws":
+			needs.needsAWS = true
 		}
 
 		// Check InitFileProvider interface using the original grant name

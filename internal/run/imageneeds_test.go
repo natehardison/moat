@@ -285,3 +285,15 @@ func contains(ss []string, s string) bool {
 	}
 	return false
 }
+
+func TestResolveImageNeedsAWSGrant(t *testing.T) {
+	needs := resolveImageNeedsWithStore([]string{"aws"}, nil, newMockStore())
+	if !needs.needsAWS {
+		t.Fatal("needsAWS = false with aws grant, want true")
+	}
+
+	needs = resolveImageNeedsWithStore([]string{"github"}, nil, newMockStore())
+	if needs.needsAWS {
+		t.Fatal("needsAWS = true without aws grant, want false")
+	}
+}
