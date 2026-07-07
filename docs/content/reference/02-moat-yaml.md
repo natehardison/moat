@@ -1211,6 +1211,30 @@ claude:
 
 **See also:** [Running Claude Code: LLM response policy](../guides/01-claude-code.md#llm-response-policy)
 
+### claude.env
+
+Arbitrary environment variables merged into the container's `~/.claude/settings.json` `env` block. Claude Code reads this block and exports the variables before running any tool.
+
+```yaml
+claude:
+  env:
+    DISABLE_AUTOUPDATER: "1"
+    DISABLE_TELEMETRY: "1"
+    AWS_REGION: us-west-2
+```
+
+- Type: `map[string]string`
+- Default: `{}`
+
+Precedence (per key, highest wins):
+
+1. `claude.env` in `moat.yaml`
+2. Project `.claude/settings.json` `env` block
+3. `~/.moat/claude/settings.json` `env` block
+4. Host `~/.claude/settings.json` `env` block (lowest, but still honored)
+
+The merged result is written into the container's `~/.claude/settings.json` at run start. Values must be strings.
+
 ### claude.sync_logs
 
 Mount Claude Code's log directory for observability.
