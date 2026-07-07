@@ -2762,3 +2762,38 @@ func TestLoadConfigRejectsBadPiPackage(t *testing.T) {
 		t.Fatal("expected Load to reject a local-path pi package")
 	}
 }
+
+func TestLoadClaudeEnvConfig(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+agent: claude
+claude:
+  env:
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    AWS_REGION: us-west-2
+`
+	if err := os.WriteFile(filepath.Join(dir, "moat.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Claude.Env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] != "1" || cfg.Claude.Env["AWS_REGION"] != "us-west-2" {
+		t.Errorf("claude.env not parsed: %#v", cfg.Claude.Env)
+	}
+}
+
+func TestLoadClaudeEnvAbsent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "moat.yaml"), []byte("agent: claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Claude.Env) != 0 {
+		t.Errorf("expected empty claude.env, got %#v", cfg.Claude.Env)
+	}
+}

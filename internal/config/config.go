@@ -316,6 +316,11 @@ type ClaudeConfig struct {
 	// Mutually exclusive with BaseURL.
 	LLMGateway *LLMGatewayConfig `yaml:"llm-gateway,omitempty"`
 
+	// Env is merged into the container's ~/.claude/settings.json "env" block.
+	// Generic passthrough mirroring Claude Code's native settings.json env.
+	// Use it for corp hygiene vars (telemetry/autoupdater off), AWS_REGION, etc.
+	Env map[string]string `yaml:"env,omitempty"`
+
 	// SkipPermissionsPrompt controls whether to suppress the bypass-permissions
 	// warning in Claude Code. Set automatically by moat when
 	// --dangerously-skip-permissions is being passed. Not a moat.yaml field.
