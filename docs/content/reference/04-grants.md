@@ -23,7 +23,7 @@ Store a credential with `moat grant <provider>`, then use it in runs with `--gra
 | `graphite` | `api.graphite.com`, `*.graphite.com` | `Authorization: token ...` | `GRAPHITE_TOKEN`, `GT_TOKEN`, or prompt |
 | `meta` | `graph.facebook.com`, `graph.instagram.com` | `Authorization: Bearer ...` | `META_ACCESS_TOKEN` or prompt |
 | `npm` | Per-registry (e.g., `registry.npmjs.org`, `npm.company.com`) | `Authorization: Bearer ...` | `.npmrc`, `NPM_TOKEN`, or manual |
-| `aws` | All AWS service endpoints | AWS `credential_process` (STS temporary credentials) | IAM role assumption via STS |
+| `aws` | All AWS service endpoints | AWS `credential_process` (STS temporary credentials) | IAM role assumption via STS (role mode) or named profile credential chain (profile mode) |
 | `ssh:<host>` | Specified host only | SSH agent forwarding (not HTTP) | Host SSH agent (`SSH_AUTH_SOCK`) |
 | `mcp:<name>` | Host from MCP server `url` field | Configured per-server header | Interactive prompt |
 | `gitlab` | `gitlab.com`, `*.gitlab.com` | `PRIVATE-TOKEN: ...` | `GITLAB_TOKEN`, `GL_TOKEN`, or prompt |
@@ -538,28 +538,45 @@ $ moat run --grant meta ./my-project
 ### CLI command
 
 ```bash
+# Role mode (default): moat calls sts:AssumeRole on the stored role ARN
 moat grant aws --role <ARN> [flags]
+
+# Profile mode: moat serves the profile's resolved credentials directly
+moat grant aws --aws-profile <name> [flags]
 ```
 
-### Flags
+See [moat grant aws](./01-cli.md#moat-grant-aws) for all flags.
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--role ARN` | IAM role ARN to assume (required) | -- |
-| `--region REGION` | AWS region for API calls | From AWS config |
-| `--session-duration DURATION` | Session duration (e.g., `1h`, `30m`, `15m`) | `15m` |
-| `--external-id ID` | External ID for cross-account role assumption | -- |
-| `--aws-profile PROFILE` | AWS shared config profile for role assumption (falls back to `AWS_PROFILE` env var) | -- |
+### Source modes
+
+The `source` metadata key recorded in the stored credential selects how moat acquires credentials at runtime:
+
+| `source` value | Stored token | Required metadata | Behavior |
+|----------------|--------------|-------------------|----------|
+| `role` (default) | Role ARN | `region`, `session_duration` | moat calls `sts:AssumeRole` on the stored ARN each time credentials are needed |
+| `profile` | _(empty)_ | `profile` | moat resolves the named AWS shared-config profile and serves those credentials directly, without calling `sts:AssumeRole` |
+
+Invariants:
+- `source=role` requires a non-empty token (the role ARN).
+- `source=profile` requires an empty token and a `profile` metadata key.
+- Credentials stored before the `source` field was introduced are treated as `source=role` for backward compatibility.
+- A missing `source` key defaults to `role`.
+
+Region is always populated (defaulting to `us-east-1` if not specified at grant time) but is not enforced as a hard invariant.
 
 ### Credential source
 
-Moat uses your host AWS credentials to call `sts:AssumeRole`. Your host must have valid AWS credentials (via `aws configure`, environment variables, or instance profile), and the target role must have a trust policy allowing your host identity to assume it.
+**Role mode:** Moat uses your host AWS credentials to call `sts:AssumeRole`. Your host must have valid AWS credentials (via `aws configure`, environment variables, or instance profile), and the target role must have a trust policy allowing your host identity to assume it.
 
 If you use named AWS profiles, pass `--aws-profile` (or set `AWS_PROFILE`) at grant time. The profile is stored with the credential so the proxy daemon uses the correct source identity for role assumption, regardless of the daemon's own environment.
 
+**Profile mode:** Moat loads the named profile via the AWS shared config file and serves its resolved credentials directly. The profile must resolve to non-empty credentials at grant time (moat validates this by calling `aws_sdk_go_v2/config.LoadDefaultConfig` and `Credentials.Retrieve`). Use this mode when your environment issues role-scoped credentials via a `credential_process` broker and `sts:AssumeRole` is not available.
+
 ### What it injects
 
-AWS credentials use `credential_process` rather than HTTP header injection:
+AWS credentials use `credential_process` rather than HTTP header injection.
+
+**Role mode:**
 
 1. The role ARN and configuration are stored (not temporary credentials)
 2. When a run starts, Moat configures `AWS_CONFIG_FILE` in the container with a `credential_process` entry
@@ -568,9 +585,15 @@ AWS credentials use `credential_process` rather than HTTP header injection:
 
 > **Note:** The `credential_process` mechanism is accessible inside the container. Credentials are temporary (STS), sessions are short (default 15 minutes), and permissions are scoped to the assumed role.
 
+**Profile mode:** The stored profile name is used at run time to resolve credentials via the named AWS shared-config profile (which may invoke its own `credential_process`). The container receives the resolved credentials directly through the same `/_aws/credentials` endpoint.
+
+> **Note:** Credentials reflect what the profile yields — they may or may not be temporary STS-issued tokens depending on the broker. Permissions are scoped by whatever the profile produces, not by a moat-controlled `AssumeRole` step.
+
 ### Refresh behavior
 
-The AWS SDK handles credential refresh automatically via `credential_process`. Each call to the process assumes a fresh role session with the configured duration.
+**Role mode:** The AWS SDK handles credential refresh automatically via `credential_process`. Each call to the process assumes a fresh role session with the configured duration.
+
+**Profile mode:** Each request to the credential endpoint re-invokes the profile's credential source. Cached credentials are bounded by their declared expiration (when present) or a 15-minute defensive refresh window (when the source declares non-expiring credentials).
 
 ### moat.yaml
 
@@ -596,6 +619,13 @@ Role assumed successfully
 AWS credential saved
 
 $ moat run --grant aws ./my-project
+```
+
+```bash
+# Profile mode (no AssumeRole; profile's credential_process is the source)
+$ moat grant aws --aws-profile=corp-broker
+Bound to identity arn:aws:sts::123456789012:assumed-role/EngineeringSSO/your-name (profile "corp-broker")
+AWS credential stored at ~/.moat/credentials/aws.enc
 ```
 
 ## SSH

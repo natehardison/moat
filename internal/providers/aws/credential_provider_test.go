@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,4 +309,141 @@ func TestCredentialProviderHandlerUnknownFormatFallsBack(t *testing.T) {
 	if resp["Version"] != float64(1) || resp["AccessKeyId"] != "AKIA" {
 		t.Errorf("default credential_process shape not served for unknown format: %v", resp)
 	}
+}
+
+func TestCredentialProvider_Region(t *testing.T) {
+	p := &CredentialProvider{region: "ap-southeast-2"}
+	if got := p.Region(); got != "ap-southeast-2" {
+		t.Errorf("Region() = %q, want ap-southeast-2", got)
+	}
+}
+
+func TestCredentialProvider_RoleARN(t *testing.T) {
+	p := &CredentialProvider{roleARN: "arn:aws:iam::123456789012:role/MyRole"}
+	if got := p.RoleARN(); got != "arn:aws:iam::123456789012:role/MyRole" {
+		t.Errorf("RoleARN() = %q, want the configured ARN", got)
+	}
+}
+
+func TestCredentialProviderProfileModeSkipsAssumeRole(t *testing.T) {
+	// In profile mode, GetCredentials must serve from the AWS SDK credentials
+	// provider directly and MUST NOT call sts:AssumeRole.
+	failOnAssumeRole := &assumeRoleShouldNotBeCalled{t: t}
+	fakeExpires := time.Now().Add(30 * time.Minute)
+
+	p := &CredentialProvider{
+		source:          "profile",
+		region:          "us-west-2",
+		sessionDuration: 15 * time.Minute,
+		stsClient:       failOnAssumeRole, // fails the test if invoked
+		profileCreds: staticCredentialsProvider{
+			creds: awssdk.Credentials{
+				AccessKeyID:     "AKIDPROFILE",
+				SecretAccessKey: "SECRET",
+				SessionToken:    "TOKEN",
+				Expires:         fakeExpires,
+				CanExpire:       true,
+			},
+		},
+	}
+
+	got, err := p.GetCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("GetCredentials: %v", err)
+	}
+	if got.AccessKeyID != "AKIDPROFILE" {
+		t.Errorf("AccessKeyID = %q, want AKIDPROFILE", got.AccessKeyID)
+	}
+	if got.SessionToken != "TOKEN" {
+		t.Errorf("SessionToken = %q, want TOKEN", got.SessionToken)
+	}
+	if !got.Expiration.Equal(fakeExpires) {
+		t.Errorf("Expiration = %v, want %v", got.Expiration, fakeExpires)
+	}
+}
+
+func TestCredentialProviderProfileModeHandlesNonExpiringSource(t *testing.T) {
+	// If the underlying source returns CanExpire=false (e.g., static keys),
+	// the provider must still set a finite cached expiration (defensive
+	// refresh window) so it re-Retrieves at a sensible cadence.
+	p := &CredentialProvider{
+		source:          "profile",
+		region:          "us-west-2",
+		sessionDuration: 15 * time.Minute,
+		stsClient:       &assumeRoleShouldNotBeCalled{t: t},
+		profileCreds: staticCredentialsProvider{
+			creds: awssdk.Credentials{
+				AccessKeyID:     "AKIDSTATIC",
+				SecretAccessKey: "SECRET",
+				CanExpire:       false, // perpetual
+			},
+		},
+	}
+	got, err := p.GetCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("GetCredentials: %v", err)
+	}
+	if got.AccessKeyID != "AKIDSTATIC" {
+		t.Errorf("AccessKeyID = %q, want AKIDSTATIC", got.AccessKeyID)
+	}
+	// Verify the provider chose a non-zero, finite expiration to drive refresh.
+	if got.Expiration.IsZero() || got.Expiration.After(time.Now().Add(time.Hour)) {
+		t.Errorf("Expiration = %v, want a finite near-future time (defensive refresh window)", got.Expiration)
+	}
+}
+
+func TestClassifyAWSError_ProfileMode(t *testing.T) {
+	err := fmt.Errorf("AccessDenied: cannot perform operation")
+	msg := classifyAWSError(err, "" /*roleARN*/, "profile")
+	if strings.Contains(msg, "assuming role") {
+		t.Errorf("profile-mode AccessDenied message must not mention role assumption: %s", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "access denied") {
+		t.Errorf("profile-mode AccessDenied message should still mention access denied: %s", msg)
+	}
+}
+
+func TestClassifyAWSError_RoleMode(t *testing.T) {
+	err := fmt.Errorf("AccessDenied: cannot perform operation")
+	msg := classifyAWSError(err, "arn:aws:iam::123:role/X", "role")
+	if !strings.Contains(msg, "arn:aws:iam::123:role/X") {
+		t.Errorf("role-mode AccessDenied message must mention the role ARN: %s", msg)
+	}
+}
+
+func TestClassifyAWSError_NoIMDS_ProfileMode(t *testing.T) {
+	err := fmt.Errorf("failed to refresh cached credentials, no EC2 IMDS role found")
+	msg := classifyAWSError(err, "", "profile")
+	if strings.Contains(msg, "assume role") {
+		t.Errorf("profile-mode no-creds message must not mention role assumption: %s", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "profile") {
+		t.Errorf("profile-mode no-creds message should mention 'profile': %s", msg)
+	}
+}
+
+// mockSTSClient implements STSAssumeRoler for testing.
+type mockSTSClient struct {
+	assumeRoleFn func(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
+}
+
+func (m *mockSTSClient) AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error) {
+	return m.assumeRoleFn(ctx, params, optFns...)
+}
+
+// assumeRoleShouldNotBeCalled is an STSAssumeRoler that fails the test if invoked.
+type assumeRoleShouldNotBeCalled struct{ t *testing.T }
+
+func (a *assumeRoleShouldNotBeCalled) AssumeRole(_ context.Context, _ *sts.AssumeRoleInput, _ ...func(*sts.Options)) (*sts.AssumeRoleOutput, error) {
+	a.t.Fatal("AssumeRole must not be called in profile mode")
+	return nil, nil
+}
+
+// staticCredentialsProvider implements awssdk.CredentialsProvider for tests.
+type staticCredentialsProvider struct {
+	creds awssdk.Credentials
+}
+
+func (s staticCredentialsProvider) Retrieve(_ context.Context) (awssdk.Credentials, error) {
+	return s.creds, nil
 }

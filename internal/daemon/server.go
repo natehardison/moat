@@ -244,6 +244,7 @@ func (s *Server) handleRegisterRun(w http.ResponseWriter, r *http.Request) {
 		awsProvider, awsErr := awsprov.NewCredentialProvider(
 			runCtx,
 			awsprov.CredentialProviderConfig{
+				Source:          req.AWSConfig.Source,
 				RoleARN:         req.AWSConfig.RoleARN,
 				Region:          req.AWSConfig.Region,
 				SessionDuration: req.AWSConfig.SessionDuration,

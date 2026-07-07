@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/moat/internal/credential"
+	awsprov "github.com/majorcontext/moat/internal/providers/aws"
 )
 
 func TestRedactToken(t *testing.T) {
@@ -215,5 +216,20 @@ func TestGrantShowIntegration(t *testing.T) {
 	cmd.SetArgs([]string{"grant", "show", "github"})
 	if err := cmd.Execute(); err != nil {
 		t.Errorf("grant show github failed: %v", err)
+	}
+}
+
+func TestCredTypeAWSSourceModes(t *testing.T) {
+	role := credential.Credential{Provider: credential.ProviderAWS, Token: "arn:aws:iam::123456789012:role/X"}
+	if got := credType(role); got != "role" {
+		t.Errorf("credType(role-mode) = %q, want %q", got, "role")
+	}
+
+	profile := credential.Credential{
+		Provider: credential.ProviderAWS,
+		Metadata: map[string]string{awsprov.MetaKeySource: "profile", "profile": "corp"},
+	}
+	if got := credType(profile); got != "profile" {
+		t.Errorf("credType(profile-mode) = %q, want %q", got, "profile")
 	}
 }
