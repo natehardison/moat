@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -446,4 +448,76 @@ type staticCredentialsProvider struct {
 
 func (s staticCredentialsProvider) Retrieve(_ context.Context) (awssdk.Credentials, error) {
 	return s.creds, nil
+}
+
+func TestCredentialProviderProcessMode(t *testing.T) {
+	// The counter file proves the command runs exactly once across two
+	// GetCredentials calls: the second is served from cache.
+	counter := filepath.Join(t.TempDir(), "count")
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	cmd := `echo x >> ` + counter + `; printf '{"Version":1,"AccessKeyId":"AKIAPM01","SecretAccessKey":"sk","SessionToken":"st","Expiration":"` + exp + `"}'`
+
+	p, err := NewCredentialProvider(context.Background(), CredentialProviderConfig{
+		Source:  "process",
+		Command: cmd,
+		Region:  "us-west-2",
+	}, "moat-test")
+	if err != nil {
+		t.Fatalf("NewCredentialProvider: %v", err)
+	}
+
+	creds, err := p.GetCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("GetCredentials: %v", err)
+	}
+	if creds.AccessKeyID != "AKIAPM01" {
+		t.Errorf("AccessKeyID = %q", creds.AccessKeyID)
+	}
+	if _, err := p.GetCredentials(context.Background()); err != nil {
+		t.Fatalf("second GetCredentials: %v", err)
+	}
+	data, _ := os.ReadFile(counter)
+	if got := strings.Count(string(data), "x"); got != 1 {
+		t.Errorf("command ran %d times, want 1 (second call must be cached)", got)
+	}
+}
+
+func TestCredentialProviderProcessModeNoExpiryBounded(t *testing.T) {
+	cmd := `printf '{"Version":1,"AccessKeyId":"AKIAPM02","SecretAccessKey":"sk"}'`
+	p, err := NewCredentialProvider(context.Background(), CredentialProviderConfig{
+		Source: "process", Command: cmd, Region: "us-west-2",
+	}, "moat-test")
+	if err != nil {
+		t.Fatalf("NewCredentialProvider: %v", err)
+	}
+	creds, err := p.GetCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("GetCredentials: %v", err)
+	}
+	until := time.Until(creds.Expiration)
+	if until <= 0 || until > profileCacheDefault+time.Minute {
+		t.Errorf("no-expiry output should be cache-bounded to ~%v, got %v", profileCacheDefault, until)
+	}
+}
+
+func TestCredentialProviderProcessModeNegativeCache(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "count")
+	cmd := `echo x >> ` + counter + `; echo 'broker down' >&2; exit 1`
+	p, err := NewCredentialProvider(context.Background(), CredentialProviderConfig{
+		Source: "process", Command: cmd, Region: "us-west-2",
+	}, "moat-test")
+	if err != nil {
+		t.Fatalf("NewCredentialProvider: %v", err)
+	}
+
+	if _, err := p.GetCredentials(context.Background()); err == nil {
+		t.Fatal("want error from failing command")
+	}
+	if _, err := p.GetCredentials(context.Background()); err == nil {
+		t.Fatal("want cached error on immediate retry")
+	}
+	data, _ := os.ReadFile(counter)
+	if got := strings.Count(string(data), "x"); got != 1 {
+		t.Errorf("command ran %d times, want 1 (failure must be negative-cached)", got)
+	}
 }

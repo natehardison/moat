@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/majorcontext/moat/internal/provider"
 	"github.com/majorcontext/moat/internal/ui"
@@ -23,8 +24,13 @@ const (
 	MetaKeyProfile         = "profile"
 	// MetaKeySource selects the credential acquisition path:
 	//   "role"    (default): moat calls sts:AssumeRole on the stored RoleARN.
-	//   "profile" (new):     moat serves the named profile's resolved creds directly.
+	//   "profile": moat serves the named profile's resolved creds directly.
+	//   "process": moat runs MetaKeyCommand on the host and serves its output.
 	MetaKeySource = "source"
+	// MetaKeyCommand is the host command for source=process. It lives only in
+	// the encrypted grant store — never in moat.yaml or any repo-controlled
+	// config, which would make a checkout able to execute host commands.
+	MetaKeyCommand = "command"
 )
 
 // Default values.
@@ -42,16 +48,18 @@ const (
 	ctxKeySessionDuration ctxKey = "aws_session_duration"
 	ctxKeyExternalID      ctxKey = "aws_external_id"
 	ctxKeyProfile         ctxKey = "aws_profile"
+	ctxKeyProcess         ctxKey = "aws_credential_process"
 )
 
 // WithGrantOptions returns a context with AWS grant options set.
 // These options are used by Grant() to determine which credential acquisition mode to use.
-func WithGrantOptions(ctx context.Context, role, region, sessionDuration, externalID, profile string) context.Context {
+func WithGrantOptions(ctx context.Context, role, region, sessionDuration, externalID, profile, credentialProcess string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyRole, role)
 	ctx = context.WithValue(ctx, ctxKeyRegion, region)
 	ctx = context.WithValue(ctx, ctxKeySessionDuration, sessionDuration)
 	ctx = context.WithValue(ctx, ctxKeyExternalID, externalID)
 	ctx = context.WithValue(ctx, ctxKeyProfile, profile)
+	ctx = context.WithValue(ctx, ctxKeyProcess, credentialProcess)
 	return ctx
 }
 
@@ -62,12 +70,14 @@ type Config struct {
 	SessionDuration time.Duration
 	ExternalID      string
 	Profile         string // AWS shared config profile (AWS_PROFILE) used to assume the role
-	Source          string // "role" (default, AssumeRole) | "profile" (serve profile creds directly, no AssumeRole)
+	Source          string // "role" (default, AssumeRole) | "profile" (serve profile creds) | "process" (run Command)
+	Command         string // host command for Source == "process"
 }
 
-// grant acquires AWS credentials in one of two modes:
+// grant acquires AWS credentials in one of three modes:
 //   - role mode: assumes the given IAM role via sts:AssumeRole.
 //   - profile mode: serves the named AWS profile's resolved credentials directly.
+//   - process mode: runs a host command and serves the credentials it prints.
 func grant(ctx context.Context) (*provider.Credential, error) {
 	var roleARN string
 	if v, ok := ctx.Value(ctxKeyRole).(string); ok && v != "" {
@@ -93,8 +103,23 @@ func grant(ctx context.Context) (*provider.Credential, error) {
 		externalID = v
 	}
 
+	var credentialProcess string
+	if v, ok := ctx.Value(ctxKeyProcess).(string); ok && v != "" {
+		credentialProcess = v
+	}
+
 	// Choose source mode from inputs.
 	switch {
+	case credentialProcess != "":
+		// The command owns identity and lifetime; other source knobs conflict.
+		if roleARN != "" || awsProfile != "" || sessionDurationStr != "" || externalID != "" {
+			return nil, &provider.GrantError{
+				Provider: "aws",
+				Cause:    fmt.Errorf("--credential-process cannot be combined with --role, --aws-profile, --session-duration, or --external-id"),
+				Hint:     "The command supplies complete credentials; grant it alone (optionally with --region).",
+			}
+		}
+		return grantProcessMode(ctx, credentialProcess, region)
 	case roleARN != "":
 		return grantRoleMode(ctx, roleARN, region, sessionDurationStr, externalID, awsProfile)
 	case awsProfile != "":
@@ -102,14 +127,77 @@ func grant(ctx context.Context) (*provider.Credential, error) {
 	default:
 		return nil, &provider.GrantError{
 			Provider: "aws",
-			Cause: fmt.Errorf("moat grant aws requires either a role ARN to assume " +
-				"or --aws-profile <name> for a profile whose credentials moat should serve directly"),
+			Cause: fmt.Errorf("moat grant aws requires a role ARN to assume, " +
+				"--aws-profile <name> for a profile whose credentials moat should serve directly, " +
+				"or --credential-process '<command>' for a host command that prints credentials"),
 			Hint: "Examples:\n" +
 				"  moat grant aws --role=arn:aws:iam::123456789012:role/MyRole\n" +
 				"  moat grant aws --aws-profile=corp-broker\n" +
+				"  moat grant aws --credential-process 'corp-tool creds --account dev'\n" +
 				"Run 'moat grant aws --help' for the full flag list.",
 		}
 	}
+}
+
+// grantProcessMode stores a host command whose output supplies credentials.
+// The command is verified once before storing.
+func grantProcessMode(ctx context.Context, command, region string) (*provider.Credential, error) {
+	resolvedRegion := DefaultRegion
+	if region != "" {
+		resolvedRegion = region
+	}
+
+	if err := validateProcessForGrant(ctx, command, resolvedRegion); err != nil {
+		return nil, &provider.GrantError{
+			Provider: "aws",
+			Cause:    err,
+			Hint: "The command must print AWS credential_process JSON or a\n" +
+				"{\"Credentials\": {...}} envelope on stdout. Run it in your shell to verify.\n" +
+				"Note: the moat daemon runs it with a minimal environment (PATH, HOME, ...).",
+		}
+	}
+
+	return &provider.Credential{
+		Provider:  "aws",
+		Token:     "", // intentionally empty: no role to assume
+		CreatedAt: time.Now(),
+		Metadata: map[string]string{
+			MetaKeySource:  "process",
+			MetaKeyCommand: command,
+			MetaKeyRegion:  resolvedRegion,
+		},
+	}, nil
+}
+
+// validateProcessForGrant runs the command once and checks its output parses
+// to usable credentials. Package-level var so tests can short-circuit it.
+// A best-effort sts:GetCallerIdentity echoes the identity; failure is NOT
+// fatal (SCPs may block it while the target service still works).
+var validateProcessForGrant = func(ctx context.Context, command, region string) error {
+	creds, err := runCredentialProcess(ctx, command)
+	if err != nil {
+		return err
+	}
+	if creds.Expiration.IsZero() {
+		ui.Warnf("Credential command output has no Expiration; moat re-runs it every %s", profileCacheDefault)
+	}
+
+	awsCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken)),
+	)
+	if err != nil {
+		return fmt.Errorf("building AWS config from command output: %w", err)
+	}
+	stsClient := sts.NewFromConfig(awsCfg)
+	out, idErr := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if idErr != nil {
+		ui.Infof("Bound to credential command (identity unavailable: GetCallerIdentity denied)")
+	} else if out != nil && out.Arn != nil {
+		ui.Infof("Bound to identity %s (via credential command)", *out.Arn)
+	}
+	return nil
 }
 
 // grantRoleMode assumes the given IAM role via sts:AssumeRole and stores the role ARN as the credential token.
@@ -351,6 +439,9 @@ func ConfigFromCredential(cred *provider.Credential) (*Config, error) {
 		if s := cred.Metadata[MetaKeySource]; s != "" {
 			cfg.Source = s
 		}
+		if cmd := cred.Metadata[MetaKeyCommand]; cmd != "" {
+			cfg.Command = cmd
+		}
 	}
 
 	// Resolve source mode (defaults to "role" for backward compatibility with
@@ -371,8 +462,15 @@ func ConfigFromCredential(cred *provider.Credential) (*Config, error) {
 		if cfg.Profile == "" {
 			return nil, fmt.Errorf("source=profile requires the \"profile\" metadata key")
 		}
+	case "process":
+		if cfg.RoleARN != "" {
+			return nil, fmt.Errorf("source=process must not carry a role ARN (credential Token must be empty)")
+		}
+		if cfg.Command == "" {
+			return nil, fmt.Errorf("source=process requires 'command' metadata")
+		}
 	default:
-		return nil, fmt.Errorf("unknown source %q (expected \"role\" or \"profile\")", cfg.Source)
+		return nil, fmt.Errorf("unknown source %q (expected \"role\", \"profile\", or \"process\")", cfg.Source)
 	}
 
 	// Fallback to legacy Scopes format: [region, sessionDuration, externalID]

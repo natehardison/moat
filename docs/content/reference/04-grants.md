@@ -543,6 +543,9 @@ moat grant aws --role <ARN> [flags]
 
 # Profile mode: moat serves the profile's resolved credentials directly
 moat grant aws --aws-profile <name> [flags]
+
+# Process mode: moat runs a host command and serves the credentials it prints
+moat grant aws --credential-process '<command>' [flags]
 ```
 
 See [moat grant aws](./01-cli.md#moat-grant-aws) for all flags.
@@ -555,6 +558,7 @@ The `source` metadata key recorded in the stored credential selects how moat acq
 |----------------|--------------|-------------------|----------|
 | `role` (default) | Role ARN | `region`, `session_duration` | moat calls `sts:AssumeRole` on the stored ARN each time credentials are needed |
 | `profile` | _(empty)_ | `profile` | moat resolves the named AWS shared-config profile and serves those credentials directly, without calling `sts:AssumeRole` |
+| `process` | _(empty)_ | `command` | moat runs the stored host command and serves the credentials it prints. Output may be AWS `credential_process` JSON or a `{"Credentials": {...}}` envelope (the shape Claude Code's `awsCredentialExport` commands produce) |
 
 Invariants:
 - `source=role` requires a non-empty token (the role ARN).
@@ -627,6 +631,20 @@ $ moat grant aws --aws-profile=corp-broker
 Bound to identity arn:aws:sts::123456789012:assumed-role/EngineeringSSO/your-name (profile "corp-broker")
 AWS credential stored at ~/.moat/credentials/aws.enc
 ```
+
+```bash
+# Process mode (moat runs the command on the host each time creds are needed)
+$ moat grant aws --credential-process 'corp-tool creds --account dev --role ro'
+Bound to identity arn:aws:sts::123456789012:assumed-role/DevRO/your-name (via credential command)
+AWS credential stored at ~/.moat/credentials/aws.enc
+```
+
+Process-mode notes:
+
+- The command is verified once at grant time and stored in the encrypted credential store. It is never read from `moat.yaml` or any repository-controlled config — a checked-out repo must not be able to execute host commands.
+- The daemon runs the command with a minimal environment (`PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`) and a 30-second timeout.
+- Output with an `Expiration` is cached until five minutes before expiry; output without one is re-fetched every 15 minutes. A failing command is retried at most every 10 seconds.
+- `--credential-process` is exclusive with `--role`, `--aws-profile`, `--session-duration`, and `--external-id`; `--region` still applies.
 
 ## SSH
 

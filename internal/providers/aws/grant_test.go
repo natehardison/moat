@@ -16,7 +16,36 @@ func TestConfigFromCredentialSource(t *testing.T) {
 		wantSrc  string
 		wantRole string
 		wantProf string
+		wantCmd  string
 	}{
+		{
+			name: "source=process",
+			cred: &provider.Credential{
+				Provider: "aws",
+				Token:    "",
+				Metadata: map[string]string{"source": "process", "command": "corp-tool creds", "region": "us-west-2"},
+			},
+			wantSrc: "process",
+			wantCmd: "corp-tool creds",
+		},
+		{
+			name: "source=process rejects non-empty Token",
+			cred: &provider.Credential{
+				Provider: "aws",
+				Token:    "arn:aws:iam::123456789012:role/X",
+				Metadata: map[string]string{"source": "process", "command": "corp-tool creds"},
+			},
+			wantErr: "source=process must not carry a role ARN",
+		},
+		{
+			name: "source=process requires command metadata",
+			cred: &provider.Credential{
+				Provider: "aws",
+				Token:    "",
+				Metadata: map[string]string{"source": "process"},
+			},
+			wantErr: "requires 'command' metadata",
+		},
 		{
 			name: "missing source defaults to role",
 			cred: &provider.Credential{
@@ -118,7 +147,7 @@ func TestGrantProfileMode(t *testing.T) {
 	validateProfileForGrant = func(ctx context.Context, profile, region string) error { return nil }
 	t.Cleanup(func() { validateProfileForGrant = origValidate })
 
-	ctx := WithGrantOptions(context.Background(), "" /*role*/, "us-west-2", "", "", "corp-broker")
+	ctx := WithGrantOptions(context.Background(), "" /*role*/, "us-west-2", "", "", "corp-broker", "")
 	cred, err := grant(ctx)
 	if err != nil {
 		t.Fatalf("grant: %v", err)
@@ -139,12 +168,55 @@ func TestGrantProfileMode(t *testing.T) {
 
 func TestGrantRequiresRoleOrProfile(t *testing.T) {
 	// Neither role ARN nor profile provided → must error before any AWS call.
-	ctx := WithGrantOptions(context.Background(), "", "", "", "", "")
+	ctx := WithGrantOptions(context.Background(), "", "", "", "", "", "")
 	_, err := grant(ctx)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !strings.Contains(err.Error(), "role ARN") || !strings.Contains(err.Error(), "--aws-profile") {
 		t.Errorf("error message must mention both options: %v", err)
+	}
+}
+
+func TestGrantProcessMode(t *testing.T) {
+	origValidate := validateProcessForGrant
+	validateProcessForGrant = func(ctx context.Context, command, region string) error { return nil }
+	t.Cleanup(func() { validateProcessForGrant = origValidate })
+
+	ctx := WithGrantOptions(context.Background(), "", "eu-west-1", "", "", "", "corp-tool creds --x")
+	cred, err := grant(ctx)
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if cred.Token != "" {
+		t.Errorf("Token = %q, want empty for process mode", cred.Token)
+	}
+	if got := cred.Metadata[MetaKeySource]; got != "process" {
+		t.Errorf("Metadata[source] = %q, want process", got)
+	}
+	if got := cred.Metadata[MetaKeyCommand]; got != "corp-tool creds --x" {
+		t.Errorf("Metadata[command] = %q, want the granted command", got)
+	}
+	if got := cred.Metadata[MetaKeyRegion]; got != "eu-west-1" {
+		t.Errorf("Metadata[region] = %q, want eu-west-1", got)
+	}
+}
+
+func TestGrantProcessModeExclusions(t *testing.T) {
+	cases := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"with role", WithGrantOptions(context.Background(), "arn:aws:iam::1:role/X", "", "", "", "", "cmd")},
+		{"with profile", WithGrantOptions(context.Background(), "", "", "", "", "corp", "cmd")},
+		{"with session-duration", WithGrantOptions(context.Background(), "", "", "30m", "", "", "cmd")},
+		{"with external-id", WithGrantOptions(context.Background(), "", "", "", "ext", "", "cmd")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := grant(tc.ctx); err == nil {
+				t.Fatal("expected error: --credential-process is exclusive with role/profile/session-duration/external-id")
+			}
+		})
 	}
 }

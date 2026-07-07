@@ -18,11 +18,12 @@ import (
 
 // AWS grant flags - these need to be passed to the AWS provider
 var (
-	awsRole            string
-	awsRegion          string
-	awsSessionDuration string
-	awsExternalID      string
-	awsProfile         string
+	awsRole              string
+	awsRegion            string
+	awsSessionDuration   string
+	awsExternalID        string
+	awsProfile           string
+	awsCredentialProcess string
 )
 
 var grantCmd = &cobra.Command{
@@ -63,6 +64,7 @@ func init() {
 	grantCmd.Flags().StringVar(&awsSessionDuration, "session-duration", "", "Session duration (default: 15m, max: 12h)")
 	grantCmd.Flags().StringVar(&awsExternalID, "external-id", "", "External ID for role assumption")
 	grantCmd.Flags().StringVar(&awsProfile, "aws-profile", "", "AWS shared config profile: pass-through mode (no --role) or source profile in role mode; falls back to AWS_PROFILE env var if not set")
+	grantCmd.Flags().StringVar(&awsCredentialProcess, "credential-process", "", "Host command that prints AWS credentials (process mode; exclusive with --role and --aws-profile)")
 }
 
 // saveCredential stores a credential and returns the file path.
@@ -106,7 +108,7 @@ func runGrant(cmd *cobra.Command, args []string) error {
 	// For AWS, require either --role (AssumeRole mode) or --aws-profile
 	// (pass-through mode). Bare invocation is a footgun (would silently
 	// use whatever the daemon host's default credential chain yields).
-	if providerName == "aws" && awsRole == "" && awsProfile == "" {
+	if providerName == "aws" && awsRole == "" && awsProfile == "" && awsCredentialProcess == "" {
 		return fmt.Errorf(`moat grant aws requires either an IAM role ARN to assume or an explicit AWS profile to pass through
 
 Examples:
@@ -119,12 +121,18 @@ Examples:
       Use this when you have no base IAM identity and your org issues
       role-scoped credentials directly (SSO / credential_process brokers).
 
+  moat grant aws --credential-process 'corp-tool creds --account dev --role ro'
+      Stores the command; moat runs it on the host each time credentials are
+      needed and serves its output. Accepts AWS credential_process JSON or a
+      {"Credentials": {...}} envelope.
+
 Options:
   --role             IAM role ARN to assume (role mode)
   --aws-profile      AWS shared config profile (pass-through mode, or role-mode source; falls back to AWS_PROFILE env var)
   --region           AWS region (default: us-east-1)
   --session-duration Session duration (default: 15m, max: 12h; role mode only)
-  --external-id      External ID for role assumption (role mode only)`)
+  --external-id      External ID for role assumption (role mode only)
+  --credential-process  Host command printing credentials (process mode only)`)
 	}
 
 	// Call the provider's Grant method
@@ -135,7 +143,7 @@ Options:
 
 	// For AWS, pass the CLI flags via context
 	if providerName == "aws" {
-		ctx = aws.WithGrantOptions(ctx, awsRole, awsRegion, awsSessionDuration, awsExternalID, awsProfile)
+		ctx = aws.WithGrantOptions(ctx, awsRole, awsRegion, awsSessionDuration, awsExternalID, awsProfile, awsCredentialProcess)
 	}
 
 	provCred, err := prov.Grant(ctx)
