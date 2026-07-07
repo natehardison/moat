@@ -331,10 +331,8 @@ type ClaudeConfig struct {
 	SkipPermissionsPrompt bool `yaml:"-"`
 }
 
-// BedrockConfig configures Claude Code → AWS Bedrock routing. Model pinning
-// is deliberately not a moat.yaml field: Claude Code has working default
-// Bedrock model IDs, and users pin models with claude.env
-// (ANTHROPIC_DEFAULT_*_MODEL / ANTHROPIC_MODEL).
+// BedrockConfig configures Claude Code → AWS Bedrock routing. Model
+// selection is Claude Code's own (its built-in Bedrock defaults).
 type BedrockConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Region  string `yaml:"region,omitempty"` // optional; overrides AWS grant region

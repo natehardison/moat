@@ -1360,7 +1360,7 @@ claude:
 | `enabled` | `boolean` | `false` | Enable Bedrock mode |
 | `region` | `string` | See below | AWS region for Bedrock API calls |
 
-Model pinning is not a `claude.bedrock` field: Claude Code has working default Bedrock model IDs, and specific models are pinned with `claude.env` (`ANTHROPIC_DEFAULT_*_MODEL` / `ANTHROPIC_MODEL`).
+Claude Code's built-in default Bedrock models are used; `claude.bedrock` has no model fields.
 
 #### Region resolution
 

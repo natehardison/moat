@@ -58,19 +58,7 @@ When `bedrock.enabled` is true, moat overrides any `awsCredentialExport` value f
 
 ## Model selection
 
-Moat sets only `CLAUDE_CODE_USE_BEDROCK=1`; Claude Code uses its built-in default Bedrock models. To pin specific model IDs, set Claude Code's documented env vars via `claude.env`:
-
-```yaml
-claude:
-  bedrock:
-    enabled: true
-  env:
-    ANTHROPIC_DEFAULT_SONNET_MODEL: global.anthropic.claude-sonnet-4-6[1m]
-    ANTHROPIC_DEFAULT_OPUS_MODEL: global.anthropic.claude-opus-4-6-v1[1m]
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: global.anthropic.claude-haiku-4-5-20251001-v1:0
-```
-
-Model ID strings (including the `[1m]` throughput modifier) pass through verbatim.
+Moat sets only `CLAUDE_CODE_USE_BEDROCK=1`; Claude Code uses its built-in default Bedrock models.
 
 ## Region resolution
 
