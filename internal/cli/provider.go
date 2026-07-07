@@ -8,6 +8,7 @@ import (
 	"github.com/majorcontext/moat/internal/config"
 	"github.com/majorcontext/moat/internal/log"
 	"github.com/majorcontext/moat/internal/netrules"
+	awsprov "github.com/majorcontext/moat/internal/providers/aws"
 	"github.com/spf13/cobra"
 )
 
@@ -178,6 +179,22 @@ func RunProvider(cmd *cobra.Command, args []string, rc ProviderRunConfig) error 
 
 	// Network: provider hosts first, then user-specified allowed hosts.
 	// Convert plain host strings to NetworkRuleEntry (host-level allow, no method/path rules).
+	//
+	// Inject Bedrock-specific hosts when Bedrock is enabled (needed under strict
+	// network policy; a no-op under permissive but harmless). The region defaults
+	// to us-east-1 when omitted — actual credential resolution in manager.go may
+	// use a different region if STS returns one, but the allowlist must be set
+	// before the container starts.
+	if cfg.Claude.Bedrock != nil && cfg.Claude.Bedrock.Enabled {
+		region := cfg.Claude.Bedrock.Region
+		if region == "" {
+			region = awsprov.DefaultRegion // documented default; see spec §3.8
+		}
+		rc.NetworkHosts = append(rc.NetworkHosts,
+			"bedrock-runtime."+region+".amazonaws.com",
+			"bedrock."+region+".amazonaws.com",
+		)
+	}
 	for _, host := range append(rc.NetworkHosts, rc.AllowedHosts...) {
 		cfg.Network.Rules = append(cfg.Network.Rules, netrules.NetworkRuleEntry{HostRules: netrules.HostRules{Host: host}})
 	}

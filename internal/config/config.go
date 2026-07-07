@@ -321,10 +321,23 @@ type ClaudeConfig struct {
 	// Use it for corp hygiene vars (telemetry/autoupdater off), AWS_REGION, etc.
 	Env map[string]string `yaml:"env,omitempty"`
 
+	// Bedrock routes Claude Code through AWS Bedrock instead of the Anthropic
+	// API. Requires the "aws" grant. nil = disabled.
+	Bedrock *BedrockConfig `yaml:"bedrock,omitempty"`
+
 	// SkipPermissionsPrompt controls whether to suppress the bypass-permissions
 	// warning in Claude Code. Set automatically by moat when
 	// --dangerously-skip-permissions is being passed. Not a moat.yaml field.
 	SkipPermissionsPrompt bool `yaml:"-"`
+}
+
+// BedrockConfig configures Claude Code → AWS Bedrock routing. Model pinning
+// is deliberately not a moat.yaml field: Claude Code has working default
+// Bedrock model IDs, and users pin models with claude.env
+// (ANTHROPIC_DEFAULT_*_MODEL / ANTHROPIC_MODEL).
+type BedrockConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Region  string `yaml:"region,omitempty"` // optional; overrides AWS grant region
 }
 
 // CodexConfig configures OpenAI Codex CLI integration options.
@@ -717,6 +730,25 @@ func Load(dir string) (*Config, error) {
 
 	if cfg.Claude.BaseURL != "" && cfg.Claude.LLMGateway != nil {
 		return nil, fmt.Errorf("claude: base_url and llm-gateway are mutually exclusive — base_url routes to an external LLM proxy, llm-gateway routes to a local Keep sidecar")
+	}
+
+	if cfg.Claude.Bedrock != nil && cfg.Claude.Bedrock.Enabled {
+		hasAWS := false
+		for _, g := range cfg.Grants {
+			if g == "aws" || strings.HasPrefix(g, "aws:") {
+				hasAWS = true
+				break
+			}
+		}
+		if !hasAWS {
+			return nil, fmt.Errorf("claude.bedrock requires the \"aws\" grant — add 'aws' to grants and run 'moat grant aws <role-arn>'")
+		}
+		if cfg.Claude.BaseURL != "" {
+			return nil, fmt.Errorf("claude.bedrock is mutually exclusive with base_url — Bedrock authenticates via AWS, base_url routes to an Anthropic-API proxy")
+		}
+		if cfg.Claude.LLMGateway != nil {
+			return nil, fmt.Errorf("claude.bedrock is mutually exclusive with llm-gateway — Bedrock authenticates via AWS, llm-gateway routes to a local Keep sidecar")
+		}
 	}
 
 	// Validate Codex MCP server specs
