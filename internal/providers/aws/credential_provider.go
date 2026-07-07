@@ -36,19 +36,21 @@ type STSAssumeRoler interface {
 
 // CredentialProviderConfig holds the configuration needed to create a CredentialProvider.
 type CredentialProviderConfig struct {
-	Source          string // "role" (default) or "profile"
+	Source          string // "role" (default), "profile", or "process"
 	RoleARN         string
 	Region          string
 	SessionDuration time.Duration
 	ExternalID      string
 	Profile         string // AWS shared config profile
+	Command         string // host command for Source == "process"
 }
 
 // CredentialProvider manages AWS credential fetching and caching for proxy use.
 // It creates an http.Handler that serves credentials in ECS container format.
 type CredentialProvider struct {
-	source          string // "role" or "profile"
+	source          string // "role", "profile", or "process"
 	roleARN         string
+	command         string // host command for process mode
 	region          string
 	sessionDuration time.Duration
 	externalID      string
@@ -58,6 +60,12 @@ type CredentialProvider struct {
 	mu         sync.RWMutex
 	cached     *Credentials
 	expiration time.Time
+
+	// Negative cache for process mode: every SDK process in the container
+	// hits the credential endpoint, so a failing command would otherwise be
+	// re-executed at container-request rate.
+	failedAt time.Time
+	lastErr  error
 
 	// stsClient is used in role mode.
 	stsClient STSAssumeRoler
@@ -72,6 +80,20 @@ type CredentialProvider struct {
 // (equivalent to AWS_PROFILE) so the correct source identity is used
 // for AssumeRole regardless of which process creates the provider.
 func NewCredentialProvider(ctx context.Context, cfg CredentialProviderConfig, sessionName string) (*CredentialProvider, error) {
+	// Process mode needs no AWS SDK config: credentials come from the command.
+	if cfg.Source == "process" {
+		if cfg.Command == "" {
+			return nil, fmt.Errorf("process mode requires a command")
+		}
+		slog.Debug("AWS credential provider created", "source", "process")
+		return &CredentialProvider{
+			source:      "process",
+			command:     cfg.Command,
+			region:      cfg.Region,
+			sessionName: sessionName,
+		}, nil
+	}
+
 	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region)}
 	if cfg.Profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(cfg.Profile))
@@ -153,9 +175,40 @@ func (p *CredentialProvider) GetCredentials(ctx context.Context) (*Credentials, 
 	switch p.source {
 	case "profile":
 		return p.fetchFromProfile(ctx)
+	case "process":
+		return p.fetchViaProcess(ctx)
 	default: // "role"
 		return p.fetchViaAssumeRole(ctx)
 	}
+}
+
+// processFailureCacheTTL bounds how quickly a failing credential command is
+// re-executed.
+const processFailureCacheTTL = 10 * time.Second
+
+func (p *CredentialProvider) fetchViaProcess(ctx context.Context) (*Credentials, error) {
+	if p.lastErr != nil && time.Since(p.failedAt) < processFailureCacheTTL {
+		return nil, p.lastErr
+	}
+
+	creds, err := runCredentialProcess(ctx, p.command)
+	if err != nil {
+		p.failedAt = time.Now()
+		p.lastErr = err
+		return nil, err
+	}
+	p.lastErr = nil
+
+	exp := creds.Expiration
+	if exp.IsZero() {
+		// No expiry information: bound the cache so the command is re-run at
+		// a sensible cadence.
+		exp = time.Now().Add(profileCacheDefault)
+		creds.Expiration = exp
+	}
+	p.cached = creds
+	p.expiration = exp
+	return p.cached, nil
 }
 
 func (p *CredentialProvider) fetchViaAssumeRole(ctx context.Context) (*Credentials, error) {
