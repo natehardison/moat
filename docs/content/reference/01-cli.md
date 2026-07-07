@@ -738,9 +738,12 @@ moat grant aws --role=<ARN> [flags]
 
 ```
 moat grant aws --aws-profile=<name> [flags]
+
+# Process mode: run a host command that prints credentials
+moat grant aws --credential-process='<command>' [flags]
 ```
 
-Invoking `moat grant aws` without either `--role` or `--aws-profile` is an error.
+Invoking `moat grant aws` without `--role`, `--aws-profile`, or `--credential-process` is an error.
 
 ### Flags
 
@@ -748,6 +751,7 @@ Invoking `moat grant aws` without either `--role` or `--aws-profile` is an error
 |------|-------------|---------|
 | `--role ARN` | IAM role ARN to assume (role mode; required unless --aws-profile is given) | -- |
 | `--aws-profile PROFILE` | AWS shared config profile: profile mode (no `--role`) or source profile in role mode (falls back to `AWS_PROFILE` env var) | -- |
+| `--credential-process CMD` | Host command that prints AWS credentials (process mode; exclusive with `--role` and `--aws-profile`) | -- |
 | `--region REGION` | AWS region for API calls | `us-east-1` |
 | `--session-duration DURATION` | Session duration (e.g., `1h`, `30m`, `15m`); role mode only | `15m` |
 | `--external-id ID` | External ID for cross-account role assumption; role mode only | -- |
