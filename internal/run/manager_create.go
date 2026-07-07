@@ -479,6 +479,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (resRun *Run, retErr
 						ctx,
 						awsprov.CredentialProviderConfig{
 							Source:          awsCfg.Source,
+							Command:         awsCfg.Command,
 							RoleARN:         awsCfg.RoleARN,
 							Region:          awsCfg.Region,
 							SessionDuration: awsCfg.SessionDuration,
@@ -497,6 +498,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (resRun *Run, retErr
 					// create its own AWSCredentialProvider.
 					runCtx.AWSConfig = &daemon.AWSConfig{
 						Source:          awsCfg.Source,
+						Command:         awsCfg.Command,
 						RoleARN:         awsCfg.RoleARN,
 						Region:          awsCfg.Region,
 						SessionDuration: awsCfg.SessionDuration,

@@ -38,7 +38,8 @@ type TokenSubstitutionEntry struct {
 
 // AWSConfig holds AWS credential provider configuration.
 type AWSConfig struct {
-	Source          string        `json:"source,omitempty"` // "role" (default) or "profile"
+	Source          string        `json:"source,omitempty"`  // "role" (default), "profile", or "process"
+	Command         string        `json:"command,omitempty"` // host command for source=process
 	RoleARN         string        `json:"role_arn"`
 	Region          string        `json:"region"`
 	SessionDuration time.Duration `json:"session_duration"`
