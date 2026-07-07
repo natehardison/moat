@@ -129,8 +129,11 @@ func runGrantList(cmd *cobra.Command, args []string) error {
 func credType(c credential.Credential) string {
 	switch c.Provider {
 	case credential.ProviderAWS:
-		if c.Metadata[awsprov.MetaKeySource] == "profile" {
+		switch c.Metadata[awsprov.MetaKeySource] {
+		case "profile":
 			return "profile"
+		case "process":
+			return "process"
 		}
 		return "role"
 	case credential.ProviderGitHub:

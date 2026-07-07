@@ -102,7 +102,7 @@ func DetectMissingGrants(grants []string, cfg *config.Config, store *credential.
 			// blindly, so surface the raw error instead of prompting.
 			promptable := grantName != "aws" && reason != ReasonReadFailed
 			if grantName == "aws" {
-				fix = "moat grant aws --role=arn:aws:iam::ACCOUNT:role/ROLE"
+				fix = "moat grant aws --role=arn:aws:iam::ACCOUNT:role/ROLE (or --aws-profile / --credential-process)"
 			}
 			detail := ""
 			if reason == ReasonReadFailed {
