@@ -1,5 +1,14 @@
 package aws
 
+// MountTarget is the in-container directory where moat mounts the AWS
+// credential helper and config (see internal/run AWS credential setup).
+const MountTarget = "/moat/aws"
+
+// CredentialHelperPath is the in-container path of the credential helper
+// script (mounted from MountTarget). Claude Code's awsCredentialExport and
+// the AWS credential_process both invoke this path.
+const CredentialHelperPath = MountTarget + "/credentials"
+
 // CredentialHelperScript is a shell script that fetches AWS credentials
 // from the moat proxy. It implements the AWS credential_process interface.
 //
@@ -18,6 +27,12 @@ if [ -z "$MOAT_AWS_CREDENTIAL_URL" ]; then
     echo "MOAT_AWS_CREDENTIAL_URL not set" >&2
     exit 1
   fi
+fi
+if [ "$1" = "--claude" ]; then
+  case "$MOAT_AWS_CREDENTIAL_URL" in
+    *\?*) MOAT_AWS_CREDENTIAL_URL="$MOAT_AWS_CREDENTIAL_URL&format=claude" ;;
+    *) MOAT_AWS_CREDENTIAL_URL="$MOAT_AWS_CREDENTIAL_URL?format=claude" ;;
+  esac
 fi
 TMPWORK=$(mktemp -d /tmp/moat-aws-XXXXXX) || { echo "moat: failed to create temp dir" >&2; exit 1; }
 trap 'rm -rf "$TMPWORK"' EXIT

@@ -253,3 +253,59 @@ func TestCredentialProvider_RefreshesExpiredCredentials(t *testing.T) {
 }
 
 // mockSTSClient is defined in provider_test.go — reused here.
+
+func TestCredentialProviderHandlerClaudeFormat(t *testing.T) {
+	handler := &credentialProviderHandler{
+		getCredentials: func(ctx context.Context) (*Credentials, error) {
+			return &Credentials{
+				AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
+				SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+				SessionToken:    "FwoGZXIvYXdzEBY...",
+				Expiration:      time.Now().Add(time.Hour),
+			}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/_aws/credentials?format=claude", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Credentials struct {
+			AccessKeyID     string `json:"AccessKeyId"`
+			SecretAccessKey string
+			SessionToken    string
+			Expiration      string
+		}
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Credentials.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" || got.Credentials.SecretAccessKey == "" || got.Credentials.SessionToken == "" {
+		t.Errorf("claude envelope missing credentials: %+v", got)
+	}
+	if _, err := time.Parse(time.RFC3339, got.Credentials.Expiration); err != nil {
+		t.Errorf("claude envelope Expiration = %q, want RFC 3339 (drives Claude Code's refresh cadence): %v", got.Credentials.Expiration, err)
+	}
+}
+
+func TestCredentialProviderHandlerUnknownFormatFallsBack(t *testing.T) {
+	// Companion: an unrecognized format value serves the default
+	// credential_process shape rather than erroring.
+	handler := &credentialProviderHandler{
+		getCredentials: func(ctx context.Context) (*Credentials, error) {
+			return &Credentials{AccessKeyID: "AKIA", SecretAccessKey: "s", SessionToken: "t", Expiration: time.Now().Add(time.Hour)}, nil
+		},
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/_aws/credentials?format=bogus", nil))
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["Version"] != float64(1) || resp["AccessKeyId"] != "AKIA" {
+		t.Errorf("default credential_process shape not served for unknown format: %v", resp)
+	}
+}

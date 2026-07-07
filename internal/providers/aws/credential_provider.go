@@ -152,6 +152,10 @@ type credentialProviderHandler struct {
 	authToken      string // Required auth token (from AWS_CONTAINER_AUTHORIZATION_TOKEN)
 }
 
+// formatClaude is the ?format= value selecting the Claude Code
+// awsCredentialExport envelope.
+const formatClaude = "claude"
+
 // ServeHTTP implements http.Handler, returning credentials in ECS format.
 func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Verify auth token if required
@@ -173,6 +177,26 @@ func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.URL.Query().Get("format") == formatClaude {
+		// Claude Code awsCredentialExport envelope. Expiration governs the
+		// refresh cadence: Claude Code caches the exported credentials until
+		// five minutes before expiry, then re-runs the export command.
+		resp := map[string]any{
+			"Credentials": map[string]any{
+				"AccessKeyId":     creds.AccessKeyID,
+				"SecretAccessKey": creds.SecretAccessKey,
+				"SessionToken":    creds.SessionToken,
+				"Expiration":      creds.Expiration.Format(time.RFC3339),
+			},
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			slog.Warn("Failed to encode AWS credentials response", "error", err)
+		}
+		return
+	}
+
 	// AWS credential_process format
 	// See: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sourcing-external.html
 	resp := map[string]any{
@@ -183,7 +207,6 @@ func (h *credentialProviderHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		"Expiration":      creds.Expiration.Format(time.RFC3339),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		// Response already started, can't send HTTP error. Log and continue.
 		slog.Warn("Failed to encode AWS credentials response", "error", err)
