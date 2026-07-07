@@ -375,6 +375,25 @@ func (m *Manager) Create(ctx context.Context, opts Options) (resRun *Run, retErr
 		}
 	}
 
+	// Load merged Claude settings which includes:
+	// - ~/.claude/plugins/known_marketplaces.json (marketplace URLs)
+	// - ~/.claude/settings.json (enabled plugins)
+	// - ~/.moat/claude/settings.json (moat user defaults)
+	// - <workspace>/.claude/settings.json (project settings)
+	// - moat.yaml claude.* fields (run overrides)
+	// Loaded here — before the proxy/AWS block — so the AWS credential and
+	// Bedrock env wiring in the proxy section can consume claudeSettings
+	// (e.g. AWS_PROFILE / AWS_REGION from the merged settings env).
+	var claudeSettings *claude.Settings
+	if opts.Config != nil {
+		var loadErr error
+		claudeSettings, loadErr = claude.LoadAllSettings(opts.Workspace, opts.Config)
+		if loadErr != nil {
+			cleanupDaemonRun()
+			return nil, fmt.Errorf("loading Claude settings: %w", loadErr)
+		}
+	}
+
 	if needsProxyForGrants || needsProxyForFirewall || needsProxyForConfig {
 		// Daemon directory for proxy state (CA certs, lock file, socket)
 		daemonDir := filepath.Join(config.GlobalConfigDir(), "proxy")
@@ -781,11 +800,39 @@ func (m *Manager) Create(ctx context.Context, opts Options) (resRun *Run, retErr
 				return nil, fmt.Errorf("writing AWS credential helper: %w", err)
 			}
 
-			// Write AWS config file
-			awsConfig := fmt.Sprintf(`[default]
-credential_process = /moat/aws/credentials
+			// Resolve effective region: claude.bedrock.region (moat.yaml) >
+			// merged settings env AWS_REGION > AWS grant region.
+			region := r.AWSCredentialProvider.Region()
+			if claudeSettings != nil && claudeSettings.Env["AWS_REGION"] != "" {
+				region = claudeSettings.Env["AWS_REGION"]
+			}
+			if bedrockEnabled(opts.Config) && opts.Config.Claude.Bedrock.Region != "" {
+				region = opts.Config.Claude.Bedrock.Region
+			}
+
+			// Honor AWS_PROFILE from merged settings env: write the
+			// credential_process under [profile <name>] (plus a [default]
+			// alias for SDK robustness). Default to [default] when unset.
+			awsProfile := ""
+			if claudeSettings != nil {
+				awsProfile = claudeSettings.Env["AWS_PROFILE"]
+			}
+			var awsConfig string
+			if awsProfile != "" {
+				awsConfig = fmt.Sprintf(`[default]
+credential_process = %s
 region = %s
-`, r.AWSCredentialProvider.Region())
+
+[profile %s]
+credential_process = %s
+region = %s
+`, awsprov.CredentialHelperPath, region, awsProfile, awsprov.CredentialHelperPath, region)
+			} else {
+				awsConfig = fmt.Sprintf(`[default]
+credential_process = %s
+region = %s
+`, awsprov.CredentialHelperPath, region)
+			}
 			configPath := filepath.Join(awsDir, "config")
 			if err := os.WriteFile(configPath, []byte(awsConfig), 0o644); err != nil {
 				cleanupDaemonRun()
@@ -795,7 +842,7 @@ region = %s
 			// Mount the directory
 			mounts = append(mounts, container.MountConfig{
 				Source:   awsDir,
-				Target:   "/moat/aws",
+				Target:   awsprov.MountTarget,
 				ReadOnly: true,
 			})
 
@@ -804,9 +851,9 @@ region = %s
 
 			// Set environment variables
 			proxyEnv = append(proxyEnv,
-				"AWS_CONFIG_FILE=/moat/aws/config",
+				"AWS_CONFIG_FILE="+awsprov.MountTarget+"/config",
 				"MOAT_AWS_CREDENTIAL_URL="+credentialURL,
-				"AWS_REGION="+r.AWSCredentialProvider.Region(),
+				"AWS_REGION="+region,
 				// AWS traffic goes through proxy for firewall/observability.
 				// Tell AWS SDK to trust our CA for MITM SSL.
 				"AWS_CA_BUNDLE="+caCertInContainer,
@@ -817,6 +864,13 @@ region = %s
 			// Include auth token if proxy requires it
 			if regResp.AuthToken != "" {
 				proxyEnv = append(proxyEnv, "MOAT_AWS_CREDENTIAL_TOKEN="+regResp.AuthToken)
+			}
+
+			// bedrockEnabled implies an "aws" grant: config.Load (internal/config)
+			// rejects claude.bedrock.enabled without it, so AWSCredentialProvider
+			// is always non-nil here when Bedrock is on.
+			if bedrockEnabled(opts.Config) {
+				proxyEnv = append(proxyEnv, claude.BedrockEnv()...)
 			}
 
 			fmt.Printf("AWS credential_process configured (role: %s)\n",
@@ -1006,22 +1060,6 @@ region = %s
 				proxyEnv = append(proxyEnv, "DOCKER_BUILDKIT=0")
 				proxyEnv = append(proxyEnv, "MOAT_DISABLE_BUILDKIT=1")
 			}
-		}
-	}
-
-	// Load merged Claude settings which includes:
-	// - ~/.claude/plugins/known_marketplaces.json (marketplace URLs)
-	// - ~/.claude/settings.json (enabled plugins)
-	// - ~/.moat/claude/settings.json (moat user defaults)
-	// - <workspace>/.claude/settings.json (project settings)
-	// - moat.yaml claude.* fields (run overrides)
-	var claudeSettings *claude.Settings
-	if opts.Config != nil {
-		var loadErr error
-		claudeSettings, loadErr = claude.LoadAllSettings(opts.Workspace, opts.Config)
-		if loadErr != nil {
-			cleanupDaemonRun()
-			return nil, fmt.Errorf("loading Claude settings: %w", loadErr)
 		}
 	}
 
@@ -2640,6 +2678,11 @@ func hasGrant(grants []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// bedrockEnabled reports whether moat.yaml turns on Claude→Bedrock routing.
+func bedrockEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.Claude.Bedrock != nil && cfg.Claude.Bedrock.Enabled
 }
 
 // policyRequiresBody reports whether any compiled file/pack policy in policyYAML

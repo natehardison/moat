@@ -17,6 +17,7 @@ import (
 	"github.com/majorcontext/moat/internal/credential"
 	"github.com/majorcontext/moat/internal/log"
 	"github.com/majorcontext/moat/internal/provider"
+	awsprov "github.com/majorcontext/moat/internal/providers/aws"
 	"github.com/majorcontext/moat/internal/providers/claude"
 	"github.com/majorcontext/moat/internal/ui"
 )
@@ -234,6 +235,7 @@ func (m *Manager) setupClaudeStaging(ctx context.Context, claudeProvider provide
 		LocalMCPServers:  claudeLocalMCP,
 		SubscriptionType: claudeSubType,
 		RateLimitTier:    claudeRateTier,
+		Bedrock:          bedrockEnabled(opts.Config),
 		// HostConfig is read automatically by the provider if nil
 	})
 	if prepErr != nil {
@@ -253,6 +255,19 @@ func (m *Manager) setupClaudeStaging(ctx context.Context, claudeProvider provide
 		// --dangerously-skip-permissions flag. See Settings.ApplyRunPolicy.
 		if policyErr := claudeSettings.ApplyRunPolicy(hasClaudeCode, skipPrompt); policyErr != nil {
 			ui.Warnf("Failed to persist bypass-permissions mode in settings.json (check the 'permissions' value in ~/.moat/claude/settings.json): %v", policyErr)
+		}
+		if bedrockEnabled(opts.Config) {
+			if claudeSettings.RawExtras == nil {
+				claudeSettings.RawExtras = make(map[string]json.RawMessage)
+			}
+			// moat-managed: point Claude Code's awsCredentialExport at the
+			// in-container helper; override any host value. json.Marshal of a
+			// string cannot fail.
+			exportCmd, _ := json.Marshal(awsprov.CredentialHelperPath + " --claude")
+			claudeSettings.RawExtras["awsCredentialExport"] = json.RawMessage(exportCmd)
+			// Strip host awsAuthRefresh: it runs a host-only SSO command that
+			// would fire inside the container on credential expiry.
+			delete(claudeSettings.RawExtras, "awsAuthRefresh")
 		}
 		settingsPath := filepath.Join(claudeConfig.StagingDir, "settings.json")
 		settingsJSON, jsonErr := json.MarshalIndent(claudeSettings, "", "  ")
