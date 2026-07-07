@@ -119,7 +119,12 @@ func (p *OAuthProvider) PrepareContainer(ctx context.Context, opts provider.Prep
 
 	// Build environment variables based on credential type.
 	// PrepareContainer can be called with either OAuth or API key credentials.
-	env := containerEnvForCredential(opts.Credential)
+	var env []string
+	if !opts.Bedrock {
+		// Bedrock authenticates via AWS; ANTHROPIC_API_KEY / base-URL relay
+		// must not be set or it conflicts with CLAUDE_CODE_USE_BEDROCK.
+		env = containerEnvForCredential(opts.Credential)
+	}
 	env = append(env, "MOAT_CLAUDE_INIT="+ClaudeInitMountPath)
 
 	success = true

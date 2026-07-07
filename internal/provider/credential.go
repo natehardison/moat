@@ -42,6 +42,11 @@ type PrepareOpts struct {
 	// other agents.
 	SubscriptionType string
 	RateLimitTier    string
+
+	// Bedrock indicates Claude→AWS-Bedrock mode: the agent provider must NOT
+	// emit ANTHROPIC_API_KEY / base-URL relay env (would conflict with
+	// CLAUDE_CODE_USE_BEDROCK).
+	Bedrock bool
 }
 
 // MCPServerConfig defines a remote/relay MCP server configuration.
